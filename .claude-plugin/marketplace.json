@@ -1,0 +1,14 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "quantumz",
+  "description": "QuantumZ plugins for Claude",
+  "owner": { "name": "Hendrik Dumith Louzada" },
+  "plugins": [
+    {
+      "name": "veloxq-solve",
+      "source": "./plugins/veloxq-solve",
+      "description": "Solve QUBO/Ising optimization problems on the VeloxQ platform",
+      "version": "0.1.0"
+    }
+  ]
+}
