@@ -34,6 +34,40 @@ directly. Claude then:
 4. Decodes the best samples back into the problem's own terms and checks
    every hard constraint before reporting.
 
+## Example prompts
+
+The following prompts all activate the skill. They are adapted from the
+plugin's benchmark suite, which verifies each returned solution against
+the known optimum.
+
+Number partitioning:
+
+> I have these server loads [23, 45, 12, 67, 34, 89, 21, 43, 55, 18] and want to split them across two racks so the total load is as balanced as possible.
+
+Max-cut:
+
+> Solve max-cut on this 8-node graph: edges = [(0,1),(0,3),(1,2),(1,4),(2,5),(3,4),(3,6),(4,5),(4,7),(5,7),(6,7),(2,7)]. Which nodes go on each side, and how many edges are cut?
+
+A QUBO given directly as a matrix:
+
+> I need to minimize x^T Q x over binary x, with symmetric Q = [[-3,2,0,1,0,0],[2,-5,2,0,1,0],[0,2,-2,3,0,0],[1,0,3,-6,2,1],[0,1,0,2,-4,2],[0,0,0,1,2,-3]]. Give me the optimal assignment and objective value.
+
+Max-3-SAT, which needs quadratization before submission:
+
+>I have this 3-SAT instance over variables x1..x6 and want an assignment satisfying as many clauses as possible: (x1 v x2 v x3), (!x2 v x4 v !x5), (!x1 v !x6 v x5), (x3 v x5 v x6), (!x3 v !x4 v !x5), (x2 v x4 v x6), (!x1 v x4 v !x2), (x1 v !x5 v x6), (!x6 v !x2 v x3).
+
+Graph coloring:
+
+> Here's a 6-node graph: triangle edges (0,1),(1,2),(0,2) and (3,4),(4,5),(3,5), plus rungs (0,3),(1,4),(2,5). I think 3 colors should be enough. Find me a valid 3-coloring.
+
+Knapsack, whose capacity constraint is encoded with slack variables:
+
+> I have 8 items, weights [12, 7, 11, 8, 9, 6, 5, 14], values [24, 13, 23, 15, 16, 8, 7, 25], capacity 30. Which items should I take to maximize the total value?
+
+A large instance:
+
+> Generate a ferromagnetic Ising ring with 50,000 spins (J_{i,i+1} = -1 around the ring, periodic boundary conditions, no external fields) and solve it. What ground-state energy does the solver reach, and is it the true ground state?
+
 ## Requirements
 
 - Python 3.9+
