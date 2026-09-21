@@ -1,0 +1,284 @@
+"""Tests for scripts/configure_veloxq.py and submit.py credential resolution.
+
+configure_veloxq.py runs as a subprocess with HOME pointed at a temp
+directory, mirroring how the setup hook invokes it. submit.resolve_config is
+tested in-process (os.path.expanduser re-reads HOME on every call).
+"""
+import contextlib
+import importlib.util
+import io
+import os
+import select
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SCRIPTS = REPO / "skills" / "veloxq-solve" / "scripts"
+SCRIPT = SCRIPTS / "configure_veloxq.py"
+SETUP_HOOK = REPO / "hooks" / "setup_credentials.py"
+
+_spec = importlib.util.spec_from_file_location("submit", SCRIPTS / "submit.py")
+submit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(submit)
+
+
+def run(home, token_env=None, stdin_text=""):
+    env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
+    env["HOME"] = str(home)
+    if token_env is not None:
+        env["VELOX_TOKEN"] = token_env
+    return subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=stdin_text, capture_output=True, text=True, env=env,
+    )
+
+
+class TempHomeCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmp.name)
+        self.config = self.home / ".veloxq" / "config.py"
+        self.addCleanup(self._tmp.cleanup)
+
+
+class TestConfigureVeloxq(TempHomeCase):
+    def test_no_source_fails_fast(self):
+        r = run(self.home)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no credentials found", r.stderr)
+        self.assertFalse(self.config.exists())
+
+    def test_env_token_persisted_mode_600(self):
+        r = run(self.home, token_env="env-tok-123")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("saved to", r.stdout)
+        self.assertNotIn("env-tok-123", r.stdout + r.stderr)
+        self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
+        self.assertIn('token = "env-tok-123"', self.config.read_text())
+
+    def test_existing_config_untouched(self):
+        run(self.home, token_env="first-tok")
+        before = self.config.read_text()
+        r = run(self.home, token_env="second-tok")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("already configured", r.stdout)
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_piped_stdin_saved(self):
+        r = run(self.home, stdin_text="piped-tok-xyz\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("piped-tok-xyz", r.stdout + r.stderr)
+        self.assertIn('token = "piped-tok-xyz"', self.config.read_text())
+
+    @unittest.skipUnless(hasattr(os, "openpty"), "needs a pty")
+    def test_interactive_prompt_masked(self):
+        """Token typed at the interactive prompt is saved but never echoed."""
+        parent, child = os.openpty()
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
+            env["HOME"] = str(self.home)
+            proc = subprocess.Popen(
+                [sys.executable, str(SCRIPT)],
+                stdin=child, stdout=child, stderr=child, env=env,
+            )
+            os.close(child)
+            output = bytearray()
+            deadline = time.monotonic() + 10
+            sent = False
+            while proc.poll() is None and time.monotonic() < deadline:
+                ready, _, _ = select.select([parent], [], [], 0.2)
+                if not ready:
+                    continue
+                try:
+                    output += os.read(parent, 4096)
+                except OSError:
+                    break
+                # Type the token only once the prompt is up (echo is off by then).
+                if not sent and b"token" in output.lower():
+                    os.write(parent, b"pty-tok-9\r")
+                    sent = True
+            self.assertEqual(proc.wait(timeout=10), 0, output.decode(errors="replace"))
+        finally:
+            os.close(parent)
+        self.assertNotIn(b"pty-tok-9", bytes(output))
+        self.assertIn('token = "pty-tok-9"', self.config.read_text())
+        self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
+
+
+def bad_sdk_source(home):
+    """Env override making the hook's venv step fail fast: a source
+    directory without pyproject.toml is rejected by setup_env.sh before
+    any venv creation or network access. Keeps hook tests hermetic."""
+    bad = home / "not-a-package"
+    bad.mkdir(exist_ok=True)
+    return {"VELOXQ_SDK_SOURCE": str(bad)}
+
+
+class TestSetupHook(TempHomeCase):
+    """The plugin Setup hook must never fail the install and never touch
+    stdin (a hook's stdin is a JSON payload, not a terminal)."""
+
+    def run_hook(self, token_env=None):
+        env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
+        env["HOME"] = str(self.home)
+        env.update(bad_sdk_source(self.home))
+        if token_env is not None:
+            env["VELOX_TOKEN"] = token_env
+        return subprocess.run(
+            [sys.executable, str(SETUP_HOOK)],
+            input='{"hook_event_name": "Setup"}', capture_output=True,
+            text=True, env=env,
+        )
+
+    def test_no_token_reports_and_exits_zero(self):
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("not configured", r.stdout)
+        self.assertFalse(self.config.exists())
+
+    def test_env_token_persisted(self):
+        r = self.run_hook(token_env="hook-tok-5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("saved to", r.stdout)
+        self.assertNotIn("hook-tok-5", r.stdout + r.stderr)
+        self.assertIn('token = "hook-tok-5"', self.config.read_text())
+
+    def test_hook_stdin_never_saved_as_token(self):
+        r = self.run_hook()
+        self.assertFalse(self.config.exists())
+        self.assertNotIn("hook_event_name", r.stdout)
+
+    def test_already_configured_reports(self):
+        self.run_hook(token_env="hook-tok-6")
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("already configured", r.stdout)
+
+
+class TestSetupHookVenv(TempHomeCase):
+    """The Setup hook provisions ~/.veloxq/venv. A healthy venv is left
+    untouched, and a failed provision must not fail the install."""
+
+    def run_hook(self):
+        env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
+        env["HOME"] = str(self.home)
+        env.update(bad_sdk_source(self.home))
+        return subprocess.run(
+            [sys.executable, str(SETUP_HOOK)],
+            input='{"hook_event_name": "Setup"}', capture_output=True,
+            text=True, env=env,
+        )
+
+    def _fake_venv_python(self, exit_code):
+        py = self.home / ".veloxq" / "venv" / "bin" / "python"
+        py.parent.mkdir(parents=True)
+        py.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+        py.chmod(0o755)
+        return py
+
+    def test_healthy_venv_reported_untouched(self):
+        py = self._fake_venv_python(exit_code=0)
+        before = py.read_text()
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("venv ready", r.stdout)
+        self.assertNotIn("venv setup failed", r.stdout)
+        self.assertEqual(py.read_text(), before)
+
+    def test_failed_provision_reports_and_exits_zero(self):
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("venv setup failed", r.stdout)
+        self.assertIn("setup_env.sh", r.stdout)
+
+    def test_broken_venv_reprovisioned(self):
+        # Import check fails -> the hook must attempt provisioning; the bad
+        # source makes that attempt fail fast, proving it happened.
+        self._fake_venv_python(exit_code=1)
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("venv setup failed", r.stdout)
+
+
+class TestSubmitResolveConfig(TempHomeCase):
+    def setUp(self):
+        super().setUp()
+        self._old_home = os.environ.get("HOME")
+        self._old_token = os.environ.pop("VELOX_TOKEN", None)
+        os.environ["HOME"] = str(self.home)
+
+        def restore():
+            os.environ["HOME"] = self._old_home
+            if self._old_token is not None:
+                os.environ["VELOX_TOKEN"] = self._old_token
+        self.addCleanup(restore)
+
+    def _write_default_config(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text('c.VeloxQAPIConfig.token = "x"\n')
+
+    def test_nothing_available_delegates_to_await(self):
+        sentinel = str(self.config)
+        calls = []
+        original = submit.await_credentials
+        submit.await_credentials = lambda path: calls.append(path) or sentinel
+        try:
+            self.assertEqual(submit.resolve_config(None), sentinel)
+        finally:
+            submit.await_credentials = original
+        self.assertEqual(calls, [str(self.config)])
+
+    def test_await_times_out_with_waiting_message(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                submit.await_credentials(str(self.config), timeout=0.3, poll=0.05)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("waiting for a valid VeloxQ key", err.getvalue())
+        self.assertIn("timed out", err.getvalue())
+
+    def test_await_picks_up_config_when_it_appears(self):
+        def write_later():
+            time.sleep(0.3)
+            self.config.parent.mkdir(parents=True)
+            self.config.write_text('c.VeloxQAPIConfig.token = "x"\n')
+        t = threading.Thread(target=write_later)
+        t.start()
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                got = submit.await_credentials(str(self.config),
+                                               timeout=10, poll=0.05)
+        finally:
+            t.join()
+        self.assertEqual(got, str(self.config))
+        self.assertIn("waiting for a valid VeloxQ key", err.getvalue())
+
+    def test_default_config_wins_over_env(self):
+        self._write_default_config()
+        os.environ["VELOX_TOKEN"] = "tok"
+        self.assertEqual(submit.resolve_config(None), str(self.config))
+
+    def test_env_is_last_resort(self):
+        os.environ["VELOX_TOKEN"] = "tok"
+        self.assertIsNone(submit.resolve_config(None))
+
+    def test_explicit_config_wins(self):
+        self._write_default_config()
+        other = self.home / "other.py"
+        other.write_text("")
+        self.assertEqual(submit.resolve_config(str(other)), str(other))
+
+    def test_explicit_config_missing_fails(self):
+        with self.assertRaises(SystemExit):
+            submit.resolve_config(str(self.home / "absent.py"))
+
+
+if __name__ == "__main__":
+    unittest.main()

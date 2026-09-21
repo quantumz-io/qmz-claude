@@ -1,0 +1,6 @@
+{
+  "name": "veloxq-solve",
+  "description": "Solve QUBO/Ising optimization problems on the VeloxQ platform",
+  "version": "0.1.0",
+  "author": { "name": "Hendrik Dumith Louzada" }
+}
