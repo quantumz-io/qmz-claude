@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
                         "token; defaults to ~/.veloxq/config.py")
     p.add_argument("--h5-type", choices=["ising", "qubo"], default=None,
                    help="force interpretation of a foreign HDF5 file")
+    p.add_argument("--resume", metavar="JOB_ID", default=None,
+                   help="fetch the result of an existing job instead of "
+                        "submitting a new one, waiting if it is still running; "
+                        "the problem spec is still required to recompute and "
+                        "decode the samples")
     return p.parse_args()
 
 
@@ -339,6 +344,61 @@ def await_credentials(default_cfg: str, timeout: float = 600.0,
     fail(f"timed out after {timeout:.0f}s waiting for {default_cfg}")
 
 
+def _await_result(job, job_id):
+    """Stream status updates until the job finishes, then return its result.
+
+    Each update the platform sends while the job is pending or running is
+    printed to stderr, so a long solve shows progress instead of a silent wait.
+    A job that ends in a non-completed state (failed or canceled) has no result
+    to fetch and is a fatal error.
+    """
+    from veloxq_sdk.jobs import JobStatus
+
+    def status() -> str:
+        return getattr(job.status, "value", job.status)
+
+    terminal = {JobStatus.COMPLETED.value, JobStatus.FAILED.value,
+                JobStatus.CANCELED.value}
+    if status() not in terminal:
+        for update in job.get_job_updates():
+            state = getattr(update.status, "value", update.status)
+            msg = f" {update.status_message}" if update.status_message else ""
+            print(f"  [{state}]{msg}", file=sys.stderr)
+    if status() != JobStatus.COMPLETED.value:
+        fail(f"job {job_id} is {status()}, not completed; no result to fetch. "
+             f"Check job logs with: jobs.py logs {job_id}", 4)
+    return job.id, job.result
+
+
+def run_solver(solver, instance, name):
+    """Submit an instance and block until the job finishes.
+
+    Same outcome as ``solver.sample(instance, name=name)``, but returns the
+    platform job id alongside the result so it can be reported and later passed
+    to jobs.py for status or log inspection. Status updates stream to stderr
+    while the job runs.
+    """
+    from veloxq_sdk import File
+
+    file = File.from_instance(instance, name=name)
+    job = solver.submit(file)
+    print(f"job {job.id} submitted; waiting for completion ...", file=sys.stderr)
+    return _await_result(job, job.id)
+
+
+def resume_job(job_id):
+    """Attach to an existing job and return its result once completed.
+
+    Streams status updates for a job that is still pending or running. A job
+    that finished in a non-completed state (failed or canceled) has no result
+    to fetch and is a fatal error.
+    """
+    from veloxq_sdk.jobs import Job
+
+    job = Job.from_id(job_id)
+    return _await_result(job, job_id)
+
+
 def main() -> None:
     args = parse_args()
     args.config = resolve_config(args.config)
@@ -365,32 +425,37 @@ def main() -> None:
         if not VeloxQAPIConfig.instance().token:
             fail(f"config file {args.config} did not set VeloxQAPIConfig.token")
 
-    from veloxq_sdk import (
-        SBMParameters,
-        SBMSolver,
-        VeloxQParameters,
-        VeloxQSolver,
-    )
-
-    param_cls = VeloxQParameters if args.solver == "veloxq" else SBMParameters
-    overrides = {}
-    if args.num_rep is not None:
-        overrides["num_rep"] = args.num_rep
-    if args.num_steps is not None:
-        overrides["num_steps"] = args.num_steps
-    params = param_cls(**overrides)
-    solver_cls = VeloxQSolver if args.solver == "veloxq" else SBMSolver
-    solver = solver_cls(parameters=params)
-
-    print(f"submitting {kind} problem with {n} variables to {args.solver} ...",
-          file=sys.stderr)
-    if native:
-        from veloxq_sdk import File
-        instance = File.from_path(args.problem)
-        print("native platform HDF5 layout: uploading file as-is", file=sys.stderr)
+    if args.resume:
+        print(f"resuming job {args.resume}; the problem spec is used only to "
+              f"recompute and decode its samples", file=sys.stderr)
+        job_id, result = resume_job(args.resume)
     else:
-        instance = bqm
-    result = solver.sample(instance, name=args.name)
+        from veloxq_sdk import (
+            SBMParameters,
+            SBMSolver,
+            VeloxQParameters,
+            VeloxQSolver,
+        )
+
+        param_cls = VeloxQParameters if args.solver == "veloxq" else SBMParameters
+        overrides = {}
+        if args.num_rep is not None:
+            overrides["num_rep"] = args.num_rep
+        if args.num_steps is not None:
+            overrides["num_steps"] = args.num_steps
+        params = param_cls(**overrides)
+        solver_cls = VeloxQSolver if args.solver == "veloxq" else SBMSolver
+        solver = solver_cls(parameters=params)
+
+        print(f"submitting {kind} problem with {n} variables to {args.solver} ...",
+              file=sys.stderr)
+        if native:
+            from veloxq_sdk import File
+            instance = File.from_path(args.problem)
+            print("native platform HDF5 layout: uploading file as-is", file=sys.stderr)
+        else:
+            instance = bqm
+        job_id, result = run_solver(solver, instance, args.name)
 
     samples = np.asarray(result.record.sample)
     platform_energies = np.asarray(result.record.energy, dtype=float)
@@ -465,6 +530,7 @@ def main() -> None:
         "num_samples_at_best": num_best,
         "top": top,
         "solver": args.solver,
+        "job_id": job_id,
         "platform_info": {k: str(v) for k, v in dict(result.info).items()},
     }
     text = json.dumps(out, indent=2)

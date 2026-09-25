@@ -209,6 +209,51 @@ optimality: the platform returns its best samples, and points 3–5 establish
 that the reported solution is feasible and its objective is computed
 correctly.
 
+## Checking VeloxQ job status and logs
+
+`submit.py` blocks until the job finishes, so a normal solve needs nothing
+more. It prints the platform job id when the job is created and records it as
+`job_id` in the result JSON. Use that id with `jobs.py` to inspect a job
+without resubmitting:
+
+```bash
+~/.veloxq/venv/bin/python <skill-dir>/scripts/jobs.py list
+~/.veloxq/venv/bin/python <skill-dir>/scripts/jobs.py info <job_id>
+~/.veloxq/venv/bin/python <skill-dir>/scripts/jobs.py logs <job_id>
+```
+
+- `list` shows recent jobs with their id, status, creation time.
+  Filter with `--status` (created, pending, running, paused, canceled,
+  completed, failed), `--created` (today, yesterday, last_week, last_month,
+  last_3_months, last_year, all), and `--limit N`.
+- `info <job_id>` reports the current state, the status message, the
+  timeline, and usage statistics. Add `--watch` to stream updates until the job
+  reaches a terminal state, which helps when following a long-running
+  submission started elsewhere.
+- `logs <job_id>` prints the platform's log entries. Narrow them with
+  `--category` (info, notice, warning, error, critical, progress),
+  `--time-period` (all_time, last_hour, last_12_hours, last_24_hours,
+  last_3_days, last_week, last_month), and `--grep <text>`.
+
+Every command takes `--json` for machine-readable output and `--config <file>`
+for credentials other than the default. These commands only read from the
+platform. They never submit or cancel work.
+
+To pick up a solve whose session ended before the result came back, resume it
+with `submit.py` instead of resubmitting:
+
+```bash
+~/.veloxq/venv/bin/python <skill-dir>/scripts/submit.py problem.json --resume <job_id>
+```
+
+This attaches to the existing job, waits if it is still running, then fetches
+and verifies its result exactly as a fresh submission would, including the
+local energy recomputation. Pass the same problem spec that was submitted,
+because the samples are recomputed and decoded against it. Find the id in the
+earlier run's stderr (`job <id> submitted ...`) or with `jobs.py list`. A job
+that ended in a failed or canceled state has no result, so resume reports that
+and points you to its logs.
+
 ## Troubleshooting
 
 - **No credentials, or 401/rejected**: `~/.veloxq/config.py` is missing
@@ -231,6 +276,11 @@ correctly.
 - **Hang after job completes**: fetch results via `job.result` /
   `job.save_result` only; some auxiliary metadata endpoints are known to
   stall.
+- **A job shows FAILED, or a run errors after the job was created**: read the
+  platform's own log with `jobs.py logs <job_id> --category error`. `submit.py`
+  prints the job id as soon as the job is created, so it is available even when
+  the run later fails. `jobs.py list` finds recent job ids if you did not
+  capture one.
 - **Solution violates constraints**: penalty too small relative to objective
   coefficients — see the penalty-weight section of the reference.
 - **Suboptimal or degenerate results on a textbook-sized problem**: almost

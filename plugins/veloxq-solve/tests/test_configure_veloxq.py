@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -278,6 +279,158 @@ class TestSubmitResolveConfig(TempHomeCase):
     def test_explicit_config_missing_fails(self):
         with self.assertRaises(SystemExit):
             submit.resolve_config(str(self.home / "absent.py"))
+
+
+class _V:
+    def __init__(self, value):
+        self.value = value
+
+
+class FakeJobStatus:
+    COMPLETED = _V("completed")
+    FAILED = _V("failed")
+    CANCELED = _V("canceled")
+
+
+class FakeUpdate:
+    def __init__(self, status, status_message=None):
+        self.status = status
+        self.status_message = status_message
+
+
+class FakeJob:
+    """Stand-in for a platform Job whose get_job_updates() drives its status."""
+
+    def __init__(self, job_id, status, updates=(), final_status=None,
+                 result="RESULT"):
+        self.id = job_id
+        self.status = status
+        self._updates = list(updates)
+        self._final = final_status
+        self._result = result
+        self.streamed = False
+        self.requested_id = None
+
+    def get_job_updates(self):
+        self.streamed = True
+        for u in self._updates:
+            self.status = getattr(u.status, "value", u.status)
+            yield u
+        if self._final is not None:
+            self.status = self._final
+
+    @property
+    def result(self):
+        return self._result
+
+
+@contextlib.contextmanager
+def inject_sdk(job, record=None):
+    """Put fake veloxq_sdk / veloxq_sdk.jobs modules in sys.modules."""
+    pkg = types.ModuleType("veloxq_sdk")
+    sub = types.ModuleType("veloxq_sdk.jobs")
+
+    class File:
+        @staticmethod
+        def from_instance(instance, name=None):
+            if record is not None:
+                record.append(("from_instance", instance, name))
+            return ("uploaded", instance)
+
+    class Job:
+        @staticmethod
+        def from_id(job_id):
+            job.requested_id = job_id
+            return job
+
+    pkg.File = File
+    pkg.jobs = sub
+    sub.Job = Job
+    sub.JobStatus = FakeJobStatus
+    saved = {k: sys.modules.get(k) for k in ("veloxq_sdk", "veloxq_sdk.jobs")}
+    sys.modules["veloxq_sdk"] = pkg
+    sys.modules["veloxq_sdk.jobs"] = sub
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+class TestRunSolver(unittest.TestCase):
+    """run_solver exposes the job id and streams status while waiting."""
+
+    def test_returns_job_id_and_streams_updates(self):
+        record = []
+        job = FakeJob("job-xyz", "pending",
+                      updates=[FakeUpdate("running", "step 1/2"),
+                               FakeUpdate("completed")],
+                      final_status="completed", result="RES")
+
+        class FakeSolver:
+            def submit(self, file):
+                record.append(("submit", file))
+                return job
+
+        err = io.StringIO()
+        with inject_sdk(job, record), contextlib.redirect_stderr(err):
+            jid, res = submit.run_solver(FakeSolver(), "BQM", "myjob")
+
+        self.assertEqual(jid, "job-xyz")
+        self.assertEqual(res, "RES")
+        self.assertEqual(record[0], ("from_instance", "BQM", "myjob"))
+        self.assertIn(("submit", ("uploaded", "BQM")), record)
+        self.assertTrue(job.streamed)
+        self.assertIn("running", err.getvalue())
+        self.assertIn("step 1/2", err.getvalue())
+
+
+class TestResumeJob(unittest.TestCase):
+    """resume_job attaches to an existing job and returns its result."""
+
+    def test_completed_returns_result_without_streaming(self):
+        job = FakeJob("job-1", "completed")
+        with inject_sdk(job), contextlib.redirect_stderr(io.StringIO()):
+            job_id, res = submit.resume_job("job-1")
+        self.assertEqual(job_id, "job-1")
+        self.assertEqual(res, "RESULT")
+        self.assertFalse(job.streamed)
+        self.assertEqual(job.requested_id, "job-1")
+
+    def test_running_streams_then_returns(self):
+        job = FakeJob("job-1", "running",
+                      updates=[FakeUpdate("running", "3000/5000"),
+                               FakeUpdate("completed")],
+                      final_status="completed")
+        err = io.StringIO()
+        with inject_sdk(job), contextlib.redirect_stderr(err):
+            job_id, res = submit.resume_job("job-1")
+        self.assertTrue(job.streamed)
+        self.assertEqual(res, "RESULT")
+        self.assertIn("3000/5000", err.getvalue())
+
+    def test_failed_is_fatal_and_points_to_logs(self):
+        job = FakeJob("job-1", "failed")
+        err = io.StringIO()
+        with inject_sdk(job), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                submit.resume_job("job-1")
+        self.assertEqual(cm.exception.code, 4)
+        self.assertIn("failed", err.getvalue())
+        self.assertIn("logs job-1", err.getvalue())
+        self.assertFalse(job.streamed)
+
+    def test_running_then_fails_is_fatal(self):
+        job = FakeJob("job-1", "running",
+                      updates=[FakeUpdate("running")], final_status="failed")
+        err = io.StringIO()
+        with inject_sdk(job), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                submit.resume_job("job-1")
+        self.assertTrue(job.streamed)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,12 @@ directly. Claude then:
 4. Decodes the best samples back into the problem's own terms and checks
    every hard constraint before reporting.
 
+For control over submissions, the plugin can also list recent jobs, check a
+single job's status and timeline, and read its platform logs, all without
+resubmitting. If a session ends before a job's result comes back, the
+submission runner can resume the job by id and fetch its verified result
+instead of submitting again.
+
 ## Example prompts
 
 The following prompts all activate the skill. They are adapted from the
@@ -88,4 +94,5 @@ prompt so the token never enters the conversation.
 | `skills/veloxq-solve/scripts/setup_env.sh` | Creates the SDK virtual environment |
 | `skills/veloxq-solve/scripts/configure_veloxq.py` | Interactive credential setup (masked prompt, file mode 600) |
 | `skills/veloxq-solve/scripts/submit.py` | Submission runner: JSON/HDF5 input, local energy recomputation |
+| `skills/veloxq-solve/scripts/jobs.py` | Job inspection: list recent jobs, check status, read logs |
 | `tests/` | Tests for the bundled scripts |
