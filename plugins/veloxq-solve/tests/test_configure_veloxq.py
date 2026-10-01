@@ -1,8 +1,8 @@
 """Tests for scripts/configure_veloxq.py and submit.py credential resolution.
 
 configure_veloxq.py runs as a subprocess with HOME pointed at a temp
-directory, mirroring how the setup hook invokes it. submit.resolve_config is
-tested in-process (os.path.expanduser re-reads HOME on every call).
+directory. submit.resolve_config is tested in-process (os.path.expanduser
+re-reads HOME on every call).
 """
 import contextlib
 import importlib.util
@@ -22,7 +22,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "veloxq-solve" / "scripts"
 SCRIPT = SCRIPTS / "configure_veloxq.py"
-SETUP_HOOK = REPO / "hooks" / "setup_credentials.py"
 
 _spec = importlib.util.spec_from_file_location("submit", SCRIPTS / "submit.py")
 submit = importlib.util.module_from_spec(_spec)
@@ -110,101 +109,6 @@ class TestConfigureVeloxq(TempHomeCase):
         self.assertNotIn(b"pty-tok-9", bytes(output))
         self.assertIn('token = "pty-tok-9"', self.config.read_text())
         self.assertEqual(stat.S_IMODE(self.config.stat().st_mode), 0o600)
-
-
-def bad_sdk_source(home):
-    """Env override making the hook's venv step fail fast: a source
-    directory without pyproject.toml is rejected by setup_env.sh before
-    any venv creation or network access. Keeps hook tests hermetic."""
-    bad = home / "not-a-package"
-    bad.mkdir(exist_ok=True)
-    return {"VELOXQ_SDK_SOURCE": str(bad)}
-
-
-class TestSetupHook(TempHomeCase):
-    """The plugin Setup hook must never fail the install and never touch
-    stdin (a hook's stdin is a JSON payload, not a terminal)."""
-
-    def run_hook(self, token_env=None):
-        env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
-        env["HOME"] = str(self.home)
-        env.update(bad_sdk_source(self.home))
-        if token_env is not None:
-            env["VELOX_TOKEN"] = token_env
-        return subprocess.run(
-            [sys.executable, str(SETUP_HOOK)],
-            input='{"hook_event_name": "Setup"}', capture_output=True,
-            text=True, env=env,
-        )
-
-    def test_no_token_reports_and_exits_zero(self):
-        r = self.run_hook()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("not configured", r.stdout)
-        self.assertFalse(self.config.exists())
-
-    def test_env_token_persisted(self):
-        r = self.run_hook(token_env="hook-tok-5")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("saved to", r.stdout)
-        self.assertNotIn("hook-tok-5", r.stdout + r.stderr)
-        self.assertIn('token = "hook-tok-5"', self.config.read_text())
-
-    def test_hook_stdin_never_saved_as_token(self):
-        r = self.run_hook()
-        self.assertFalse(self.config.exists())
-        self.assertNotIn("hook_event_name", r.stdout)
-
-    def test_already_configured_reports(self):
-        self.run_hook(token_env="hook-tok-6")
-        r = self.run_hook()
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("already configured", r.stdout)
-
-
-class TestSetupHookVenv(TempHomeCase):
-    """The Setup hook provisions ~/.veloxq/venv. A healthy venv is left
-    untouched, and a failed provision must not fail the install."""
-
-    def run_hook(self):
-        env = {k: v for k, v in os.environ.items() if k != "VELOX_TOKEN"}
-        env["HOME"] = str(self.home)
-        env.update(bad_sdk_source(self.home))
-        return subprocess.run(
-            [sys.executable, str(SETUP_HOOK)],
-            input='{"hook_event_name": "Setup"}', capture_output=True,
-            text=True, env=env,
-        )
-
-    def _fake_venv_python(self, exit_code):
-        py = self.home / ".veloxq" / "venv" / "bin" / "python"
-        py.parent.mkdir(parents=True)
-        py.write_text(f"#!/bin/sh\nexit {exit_code}\n")
-        py.chmod(0o755)
-        return py
-
-    def test_healthy_venv_reported_untouched(self):
-        py = self._fake_venv_python(exit_code=0)
-        before = py.read_text()
-        r = self.run_hook()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("venv ready", r.stdout)
-        self.assertNotIn("venv setup failed", r.stdout)
-        self.assertEqual(py.read_text(), before)
-
-    def test_failed_provision_reports_and_exits_zero(self):
-        r = self.run_hook()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("venv setup failed", r.stdout)
-        self.assertIn("setup_env.sh", r.stdout)
-
-    def test_broken_venv_reprovisioned(self):
-        # Import check fails -> the hook must attempt provisioning; the bad
-        # source makes that attempt fail fast, proving it happened.
-        self._fake_venv_python(exit_code=1)
-        r = self.run_hook()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("venv setup failed", r.stdout)
 
 
 class TestSubmitResolveConfig(TempHomeCase):
