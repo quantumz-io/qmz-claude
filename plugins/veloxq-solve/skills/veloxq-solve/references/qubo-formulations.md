@@ -21,9 +21,9 @@ need, plus the penalty-weight craft that papers gloss over.
 - **QUBO**: minimize `x^T Q x` with `x_i ∈ {0,1}`. Diagonal `Q_ii` are linear
   terms (since `x_i^2 = x_i`).
 - **Ising**: minimize `Σ_i h_i s_i + Σ_{i<j} J_ij s_i s_j` with `s_i ∈ {-1,+1}`.
-- Conversion: `x = (s + 1)/2`. Don't do this by hand — build a `dimod`
-  `BinaryQuadraticModel` in the natural vartype and the SDK converts on
-  submission. But remember which vartype *you* formulated in when decoding.
+- Conversion: `x = (s + 1)/2`. Don't do this by hand: submit the spec with
+  `"type"` set to the vartype you formulated in, and the platform converts.
+  But remember which vartype *you* formulated in when decoding.
 
 Maximization: negate the objective. VeloxQ minimizes.
 
@@ -129,7 +129,7 @@ splits):
   binary form even though the corresponding spin terms were constant;
 - halving the cross terms: the expansion gives `8 a_i a_j x_i x_j` *as a
   once-per-pair coefficient*. Writing `4 a_i a_j` is correct only for a
-  symmetric-matrix convention where each pair is counted twice — submit.py's
+  symmetric-matrix convention where each pair is counted twice. The spec's
   `"quadratic"` triples count each pair once. With the halved value, all-ones
   and every all-but-one state tie exactly.
 
