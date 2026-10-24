@@ -23,6 +23,7 @@ import html
 import math
 import re
 import sys
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from .models import Model
@@ -39,7 +40,9 @@ MAX_CELLS = 40000
 MAX_GRID_ROWS = 1000
 MAX_GRID_COLS = 200
 MAX_TABLE_ROWS = 2000
-MAX_STRIP = 4096         # best-sample strip, in variables
+MAX_STRIP = 4096         # best-sample strip, in variables or blocks of variables
+COARSE_BLOCKS = (40, 20, 12)   # index blocks in the simplified coupling graph, fewer
+                               # when nearly every pair of blocks shares a coupling
 TWIN_ROWS = 300          # rows shown in a figure's data table
 MAX_TEXT = 300           # characters in any string of the view
 MAX_VIEWS = 10           # figures in one report
@@ -115,6 +118,20 @@ def fmt(x) -> str:
     # Six significant digits, but never fewer than the integer part needs.
     digits = max(6, len(str(int(abs(x)))) + 2) if abs(x) < 1e15 else 6
     return f"{x:,.{digits}g}"
+
+
+ENERGY_UNIT = "J"
+"""Unit of energies and model coefficients: the coupling scale J, so a
+coefficient of 1 in the submitted model is 1 J."""
+
+
+def with_unit(x, unit: str) -> str:
+    return f"{fmt(x)} {unit}" if unit else fmt(x)
+
+
+def col_name(name: str, unit: str) -> str:
+    """A table column name with its unit in parentheses."""
+    return f"{name} ({unit})" if unit else name
 
 
 def tw(s, size: float = 12.0) -> float:
@@ -273,6 +290,7 @@ def _color_rules() -> list:
              (".vq-t2", "fill", INK2), (".vq-tm", "fill", MUTED),
              (".vq-grid", "stroke", GRID), (".vq-axis", "stroke", AXIS),
              (".vq-e", "stroke", AXIS), (".vq-eh", "stroke", INK),
+             (".vq-em", "stroke", INK2),
              (".vq-ev", "stroke", CRITICAL), (".vq-mark", "stroke", INK),
              (".vq-ring", "stroke", SURFACE), (".vq-halo", "stroke", SURFACE),
              (".vq-n0", "fill", NEUTRAL), (".vq-n0", "stroke", AXIS),
@@ -301,10 +319,10 @@ def figure_css() -> str:
     lines = "".join(f".vq-l{k}," for k in range(1, len(SERIES) + 1))
     static = (
         f".vq-fig text{{font-family:{FONT}}}"
-        f"{lines}.vq-e,.vq-eh,.vq-ev,.vq-mark,.vq-grid,.vq-axis"
+        f"{lines}.vq-e,.vq-eh,.vq-em,.vq-ev,.vq-mark,.vq-grid,.vq-axis"
         "{fill:none;stroke-linecap:round}"
         ".vq-grid,.vq-axis{stroke-width:1}"
-        ".vq-e{stroke-width:1.25}.vq-eh{stroke-width:2.5}"
+        ".vq-e{stroke-width:1.25}.vq-eh{stroke-width:2.5}.vq-em{stroke-width:1.5}"
         ".vq-ev{stroke-width:2.5;stroke-dasharray:6 4}"
         ".vq-mark{stroke-width:2}.vq-route{stroke-width:2}"
         ".vq-ring{stroke-width:2}.vq-n0{stroke-width:1.25}"
@@ -411,9 +429,11 @@ def legend(entries) -> tuple:
 
 
 class Figure:
-    def __init__(self, kind, title, caption, height, body, tables=(), violations=0):
+    def __init__(self, kind, title, caption, height, body, tables=(), violations=0,
+                 simplified=None):
         self.kind = kind
         self.violations = violations   # marks drawn as violated
+        self.simplified = simplified   # how the figure was coarsened for the page footnote
         self.title = title
         self.caption = caption
         self.height = height
@@ -557,10 +577,16 @@ def node_radius(n: int) -> float:
 
 
 def network_figure(kind, title, caption, labels, groups, group_order, edges,
-                   edge_labels, coords=None) -> Figure:
+                   edge_labels, coords=None, node_tips=None, edge_tips=None,
+                   simplified=None, edge_legend=None, soft=False, unit="") -> Figure:
     """Node-link figure. groups[i] is a group name or None (ungrouped);
     edges are (u, v, weight or None, status) with status in plain /
-    highlight / violated."""
+    highlight / violated. node_tips and edge_tips replace the hover text
+    built from the labels. The edge states are listed in the legend when
+    ``edge_legend`` is true, or by default when any edge is not plain.
+    ``soft`` draws highlighted edges in a mid tone instead of the ink, for a
+    figure where they are context rather than the result. ``unit`` is the
+    unit of the edge weights."""
     import numpy as np
 
     n = len(labels)
@@ -578,10 +604,13 @@ def network_figure(kind, title, caption, labels, groups, group_order, edges,
                         + f" ({sum(1 for g in groups if g is None)})", "circle"))
     present = {s: sum(1 for e in edges if e[3] == s)
                for s in ("highlight", "plain", "violated")}
-    cls_of = {"plain": "vq-e", "highlight": "vq-eh", "violated": "vq-ev"}
-    if present["highlight"] or present["violated"]:
+    cls_of = {"plain": "vq-e", "highlight": "vq-em" if soft else "vq-eh", "violated": "vq-ev"}
+    listed = edge_legend          # True lists highlight and plain even when absent
+    if edge_legend is None:
+        edge_legend = bool(present["highlight"] or present["violated"])
+    if edge_legend:
         for s in ("highlight", "plain", "violated"):
-            if present[s]:
+            if present[s] or (listed and s != "violated"):
                 entries.append(("edge", cls_of[s], f"{edge_labels[s]} ({present[s]})", None))
     leg, top = legend(entries)
 
@@ -598,17 +627,15 @@ def network_figure(kind, title, caption, labels, groups, group_order, edges,
     show_w = bool(weights) and len(set(weights)) > 1 and len(edges) <= 40
     drawn = []
     for status in ("plain", "highlight", "violated"):
-        for u, v, w, s in edges:
+        for k, (u, v, w, s) in enumerate(edges):
             if s != status:
                 continue
-            t = f"{labels[u]} – {labels[v]}"
-            if w is not None:
-                t += f" · weight {fmt(w)}"
-            mark = ""
-            if s != "plain" or present["highlight"] or present["violated"]:
-                mark = f" · {edge_labels[s]}"
+            t = edge_tips[k] if edge_tips else f"{labels[u]} – {labels[v]}"
+            if w is not None and not edge_tips:
+                t += f" · weight {with_unit(w, unit)}"
+            mark = f" · {edge_labels[s]}" if edge_legend else ""
             drawn.append({"u": u, "v": v, "cls": cls_of[s], "tip": t, "mark": mark,
-                          "text": fmt(w) if show_w and w is not None else None})
+                          "text": with_unit(w, unit) if show_w and w is not None else None})
     nodes = []
     for i, (label, g) in enumerate(zip(labels, groups)):
         k = slot.get(g)
@@ -617,16 +644,18 @@ def network_figure(kind, title, caption, labels, groups, group_order, edges,
             "fill": f"vq-s{k}" if k else "vq-n0",
             "ink": f"vq-o{k}" if k else "vq-t",
             "shape": SHAPES[k - 1] if k and shaped else "circle",
-            "tip": f"{label}" + (f" · {g}" if g is not None else ""),
+            "tip": node_tips[i] if node_tips else
+                   f"{label}" + (f" · {g}" if g is not None else ""),
         })
     body = leg + draw_network(nodes, drawn, xy, radius)
     tables = [("Nodes", ["node", "group"],
                [[lab, "" if g is None else g] for lab, g in zip(labels, groups)])]
     if edges:
-        tables.append(("Edges", ["from", "to", "weight", "state"],
+        tables.append(("Edges", ["from", "to", col_name("weight", unit), "state"],
                        [[labels[u], labels[v], "" if w is None else fmt(w),
                          edge_labels[s]] for u, v, w, s in edges]))
-    return Figure(kind, title, caption, height, body, tables, present["violated"])
+    return Figure(kind, title, caption, height, body, tables, present["violated"],
+                  simplified)
 
 
 def _parse_nodes(raw, where: str, grouped: bool = True) -> tuple:
@@ -670,7 +699,7 @@ def _parse_nodes(raw, where: str, grouped: bool = True) -> tuple:
 
 def view_graph(v: dict, where: str) -> Figure:
     take(v, where, ["type", "nodes", "edges"],
-         ["title", "caption", "groups", "edge_rule", "edge_labels"])
+         ["title", "caption", "groups", "edge_rule", "edge_labels", "unit"])
     ids, labels, groups, coords = _parse_nodes(v["nodes"], f"{where}.nodes")
     index = {i: k for k, i in enumerate(ids)}
 
@@ -731,13 +760,15 @@ def view_graph(v: dict, where: str) -> Figure:
                  f"got {status!r}")
         edges.append((u, t, weight, status))
     return network_figure("graph", v.get("title", ""), v.get("caption", ""),
-                          labels, groups, order, edges, names, coords)
+                          labels, groups, order, edges, names, coords,
+                          unit=str(v.get("unit", "")))
 
 
 def view_route(v: dict, where: str) -> Figure:
     import numpy as np
 
-    take(v, where, ["type", "points", "routes"], ["title", "caption", "distances"])
+    take(v, where, ["type", "points", "routes"], ["title", "caption", "distances", "unit"])
+    unit = str(v.get("unit", ""))
     ids, labels, _, coords = _parse_nodes(v["points"], f"{where}.points", grouped=False)
     index = {i: k for k, i in enumerate(ids)}
     n = len(ids)
@@ -784,20 +815,21 @@ def view_route(v: dict, where: str) -> Figure:
             if dist is not None:
                 d = float(dist[a, b])
                 total += d
-                t += f" · {fmt(d)}"
+                t += f" · {with_unit(d, unit)}"
             edges.append({"u": a, "v": b, "cls": f"vq-l{r + 1} vq-route",
                           "head": f"vq-s{r + 1}", "tip": t, "d": d})
             rows.append([name, step, labels[a], labels[b], "" if d is None else fmt(d)])
         starts.add(seq[0])
         entries.append(("edge", f"vq-l{r + 1} vq-route",
-                        name + (f" (length {fmt(total)})" if dist is not None else ""),
+                        name + (f" (length {with_unit(total, unit)})" if dist is not None
+                                else ""),
                         None))
     entries.append(("start", "vq-n0", "start", None))
     leg, top = legend(entries)
 
     if len(edges) <= 40:
         for e in edges:
-            e["text"] = None if e["d"] is None else fmt(e["d"])
+            e["text"] = None if e["d"] is None else with_unit(e["d"], unit)
     radius = node_radius(n)
     margin = radius + 26
     if coords is not None:
@@ -819,7 +851,8 @@ def view_route(v: dict, where: str) -> Figure:
             "Positions are a 2-D embedding of the distance matrix, so drawn "
             "lengths are approximate.")
     return Figure("route", v.get("title", ""), caption, height, body,
-                  [("Steps", ["route", "step", "from", "to", "distance"], rows)])
+                  [("Steps", ["route", "step", "from", "to", col_name("distance", unit)],
+                    rows)])
 
 
 # -------------------------------------------------------------------- lanes
@@ -970,7 +1003,8 @@ def view_bins(v: dict, where: str) -> Figure:
                   if len(capacities) == 1 else None)
     body, height = draw_lanes(rows, v.get("unit", ""), mark_label=mark_label)
     return Figure("bins", v.get("title", ""), v.get("caption", ""), height, body,
-                  [("Items", ["bin", "item", size_label, value_label], table)],
+                  [("Items", ["bin", "item", col_name(size_label, v.get("unit", "")),
+                              value_label], table)],
                   sum(1 for r in rows if r.get("flag")))
 
 
@@ -1026,7 +1060,8 @@ def view_schedule(v: dict, where: str) -> Figure:
         if len(order) > 1 else []
     body, height = draw_lanes(rows, v.get("unit", ""), entries, zero=False)
     return Figure("schedule", v.get("title", ""), v.get("caption", ""), height, body,
-                  [("Tasks", ["row", "task", "start", "end", "group", "state"], table)],
+                  [("Tasks", ["row", "task", col_name("start", v.get("unit", "")),
+                              col_name("end", v.get("unit", "")), "group", "state"], table)],
                   sum(1 for r in rows for seg in r["segs"] if seg["flag"]))
 
 
@@ -1060,8 +1095,8 @@ def view_bars(v: dict, where: str) -> Figure:
     table = [[it["label"], fmt(it["value"])]
              + ([("yes" if it.get("highlight") else "")] if emphasis else [])
              for it in items]
-    cols = ["item", "value"] + ([str(v.get("highlight_label", "selected"))]
-                                if emphasis else [])
+    cols = ["item", col_name("value", v.get("unit", ""))] + (
+        [str(v.get("highlight_label", "selected"))] if emphasis else [])
     return Figure("bars", v.get("title", ""), v.get("caption", ""), height, body,
                   [("Values", cols, table)])
 
@@ -1070,12 +1105,15 @@ def view_bars(v: dict, where: str) -> Figure:
 
 def draw_grid(cells, rows=None, cols=None, texts=None, violations=(),
               on_label="1", off_label="0", tip_of=None, cell_max=36,
-              kind=None) -> tuple:
+              kind=None, poles=("+1", "−1"), gradient=None) -> tuple:
     """Cell matrix. A None cell is left blank. Returns (svg, height).
 
     Unless kind is given, values in {0, 1} draw as on/off (binary), values in
-    {-1, +1} as two poles (spin), and anything else on a one-hue scale, with
-    two poles around zero when the sign varies.
+    {-1, +1} as two poles (spin, labeled ``poles``), and anything else on a
+    one-hue scale, with two poles around zero when the sign varies. A spin
+    cell given a value between the poles is drawn lighter, the closer to zero
+    the lighter. ``gradient`` (low label, high label) replaces the two spin
+    swatches with one strip from the second pole's color to the first's.
     """
     nr = len(cells)
     nc = len(cells[0]) if nr else 0
@@ -1110,12 +1148,25 @@ def draw_grid(cells, rows=None, cols=None, texts=None, violations=(),
 
     if kind == "binary":
         entries = [("rect", "vq-s1", on_label, None), ("rect", "vq-off", off_label, None)]
-    elif kind == "spin":
-        entries = [("rect", "vq-s1", "+1", None), ("rect", "vq-s2", "−1", None)]
+    elif kind == "spin" and gradient is None:
+        entries = [("rect", "vq-s1", poles[0], None), ("rect", "vq-s2", poles[1], None)]
     else:
         entries = []
     leg, top = legend(entries)
-    if not entries:      # value scale
+    if kind == "spin" and gradient is not None:
+        x = float(PAD)
+        leg = text(x, 20, gradient[0], "vq-t2")
+        x += tw(gradient[0]) + 8
+        for s in (-1, -2 / 3, -1 / 3, 0, 1 / 3, 2 / 3, 1):
+            cls = "vq-s1" if s > 0 else "vq-s2"
+            op = 0.15 + 0.85 * abs(s)
+            leg += (f'<rect x="{x:.1f}" y="10" width="14" height="12" class="vq-off"/>'
+                    f'<rect x="{x:.1f}" y="10" width="14" height="12" class="{cls}" '
+                    f'fill-opacity="{op:.2f}"/>')
+            x += 14
+        leg += text(x + 8, 20, gradient[1], "vq-t2")
+        top = 30.0
+    elif not entries:      # value scale
         x = float(PAD)
         lo_label = fmt(-peak if kind == "diverging" else vmin)
         hi_label = fmt(peak if kind == "diverging" else vmax)
@@ -1170,7 +1221,9 @@ def draw_grid(cells, rows=None, cols=None, texts=None, violations=(),
             if kind == "binary":
                 cls, op, strong = ("vq-s1", None, True) if val else ("vq-off", None, False)
             elif kind == "spin":
-                cls, op, strong = ("vq-s1" if val > 0 else "vq-s2"), None, True
+                cls = "vq-s1" if val > 0 else "vq-s2"
+                op = None if abs(val) >= 1 else 0.15 + 0.85 * abs(val)
+                strong = op is None or op > 0.55
             elif kind == "diverging":
                 cls, op = ("vq-s1" if val > 0 else "vq-neg"), abs(val) / peak
                 strong = op > 0.55
@@ -1312,6 +1365,7 @@ def distribution_figure(dist: dict, kind: str):
         names = [f"{fmt(a)} to {fmt(b)}" for a, b in zip(edges, edges[1:])]
     else:
         names = [fmt(x) for x in marks]
+    J = ENERGY_UNIT
     if len(names) != len(counts) or len(counts) > 200 or sum(counts) == 0:
         fail(f"{where}: counts must be non-empty, at most 200 long, and match "
              "the values or bins")
@@ -1337,7 +1391,7 @@ def distribution_figure(dist: dict, kind: str):
         d = column_path(cx - width / 2, cx + width / 2, bottom - h, bottom)
         cls = "vq-s1" if k == best else "vq-mute"
         out.append(f'<path d="{d}" class="vq-m {cls}">'
-                   f'{tip(f"{names[k]} · {fmt(c)} samples")}</path>')
+                   f'{tip(f"{names[k]} {J} · {fmt(c)} samples")}</path>')
         if k == best:
             out.append(text(cx, bottom - h - 6, fmt(c), "vq-t", 11,
                             "middle" if cx > left + 20 else "start", 600))
@@ -1359,72 +1413,207 @@ def distribution_figure(dist: dict, kind: str):
     if binned:
         caption = "The accent column is the bin that holds the best value."
         if above:
-            tail = f"{fmt(above)} samples above {fmt(edges[-1])} are not drawn"
+            tail = f"{fmt(above)} samples above {with_unit(edges[-1], J)} are not drawn"
             out.append(text(right, top - 8, tail, "vq-t2", 11, "end"))
             rows.append([f"above {fmt(edges[-1])}", above])
             caption += f" {tail}."
-    out.append(text((left + right) / 2, bottom + 36, f"{axis} (lower is better)",
+    out.append(text((left + right) / 2, bottom + 36, f"{axis} in {J} (lower is better)",
                     "vq-tm", 11, "middle"))
     out.append(text(14, (top + bottom) / 2, "samples", "vq-tm", 11, "middle",
                     extra=f' transform="rotate(-90 14 {(top + bottom) / 2:.1f})"'))
     return Figure("samples", "Samples by objective value", caption, bottom + 48,
-                  "".join(out), [("Samples", [axis, "samples"], rows)])
+                  "".join(out), [("Samples", [col_name(axis, J), "samples"], rows)])
 
 
 def model_figures(result: dict, model: Model) -> tuple:
     """The coupling graph in the best sample's state. Returns (figures, notes,
     stats)."""
-    kind, linear, quadratic, n = model.kind, model.linear, model.quadratic, model.n
+    import numpy as np
+
+    kind, n, m = model.kind, model.n, model.num_interactions
     sample = result["best_sample"]
-    coefs = [abs(c) for c in list(linear.values()) + list(quadratic.values()) if c]
-    stats = [("Variables", fmt(n)), ("Couplings", fmt(len(quadratic))),
-             ("Linear terms", fmt(len(linear)))]
+    coefs = np.abs(np.r_[model.biases[model.biases != 0], model.values[model.values != 0]])
+    stats = [("Variables", fmt(n)), ("Couplings", fmt(m)),
+             ("Linear terms", fmt(int(np.count_nonzero(model.biases))))]
     if n > 1:
-        stats.append(("Coupling density", f"{len(quadratic) / (n * (n - 1) / 2):.1%}"))
-    if coefs:
-        stats.append(("Coefficient range", f"{fmt(min(coefs))} to {fmt(max(coefs))}"))
-    if n > 300 or len(quadratic) > 3000:
-        return [], [f"The coupling graph is drawn up to 300 variables and 3,000 "
-                    f"couplings. This model has {fmt(n)} and {fmt(len(quadratic))}."], stats
-    if kind == "ising":
-        groups = ["spin +1" if s > 0 else "spin −1" for s in sample]
-        order = ["spin +1", "spin −1"]
-        names = {"highlight": "frustrated coupling", "plain": "satisfied coupling",
-                 "violated": "", "ungrouped": ""}
-        edges = [(i, j, c, "highlight" if c * sample[i] * sample[j] > 0 else "plain")
-                 for (i, j), c in quadratic.items()]
-        caption = ("Each node is a spin and each edge a coupling. A frustrated "
-                   "coupling raises the energy in this state.")
-    else:
-        groups = ["x = 1" if x else None for x in sample]
-        order = ["x = 1"] if any(sample) else []
-        names = {"highlight": "active coupling (both ends 1)",
-                 "plain": "inactive coupling", "violated": "", "ungrouped": "x = 0"}
-        edges = [(i, j, c, "highlight" if sample[i] and sample[j] else "plain")
-                 for (i, j), c in quadratic.items()]
-        caption = ("Each node is a binary variable and each edge a quadratic "
-                   "term. A term contributes to the objective only when both "
-                   "of its variables are 1.")
+        stats.append(("Coupling density", f"{m / (n * (n - 1) / 2):.1%}"))
+    if coefs.size:
+        stats.append(("Coefficient range", f"{fmt(float(coefs.min()))} to "
+                      f"{with_unit(float(coefs.max()), ENERGY_UNIT)}"))
+    sample = np.asarray(sample)
+    if n > 300 or m > 3000:
+        return [coarse_model_figure(model, sample)], [], stats
+    one, zero = value_names(kind)
+    groups = [one if x > 0 else zero for x in sample]
+    edges = [(int(i), int(j), float(c), "highlight" if h else "plain")
+             for i, j, c, h in zip(model.rows, model.cols, model.values, raising(model, sample))]
+    caption = ("Each node is a variable colored by its value in the best sample, and "
+               "each edge a coupling. A highlighted coupling raises the objective in "
+               "this state.")
     fig = network_figure("model", "Model in its best state", caption,
-                         [str(i) for i in range(n)], groups, order, edges, names)
+                         [str(i) for i in range(n)], groups, [one, zero], edges, COUPLING_NAMES,
+                         edge_legend=True, soft=True, unit=ENERGY_UNIT)
     return [fig], [], stats
+
+
+COUPLING_NAMES = {"highlight": "coupling raising the objective",
+                  "plain": "coupling lowering the objective or inactive",
+                  "violated": "", "ungrouped": ""}
+
+
+def value_names(kind: str) -> tuple:
+    """The two values a variable takes, set first."""
+    return ("+1", "−1") if kind == "ising" else ("1", "0")
+
+
+def raising(model: Model, sample) -> "np.ndarray":
+    """Which couplings raise the objective in ``sample``: the coupling and
+    the product of its two values have the same sign."""
+    c, rows, cols = model.values, model.rows, model.cols
+    if model.kind == "ising":
+        return c * sample[rows] * sample[cols] > 0
+    return (c > 0) & (sample[rows] > 0) & (sample[cols] > 0)
+
+
+def blocks(n: int, at_most: int) -> tuple:
+    """Split 0..n-1 into at most ``at_most`` consecutive blocks of one size,
+    the last one shorter. Returns (block size, block count)."""
+    size = -(-n // min(n, at_most))
+    return size, -(-n // size)
+
+
+def coarse_model_figure(model: Model, sample) -> Figure:
+    """The coupling graph with consecutive index blocks as nodes. A block is
+    colored by the share of its variables set in the best sample, and an edge
+    joins two blocks that share a coupling. Couplings inside one block are
+    counted in its hover text."""
+    import numpy as np
+
+    n, rows, cols = model.n, model.rows, model.cols
+    on = sample > 0
+    hot = raising(model, sample)
+    for at_most in COARSE_BLOCKS:
+        size, nb = blocks(n, at_most)
+        bi, bj = rows // size, cols // size
+        inner = bi == bj
+        pairs = np.unique(bi[~inner] * nb + bj[~inner])
+        if len(pairs) <= 6 * nb:
+            break
+    sizes = np.minimum(size, n - np.arange(nb) * size)
+    ones = np.bincount(np.arange(n) // size, weights=on, minlength=nb)
+    within = np.bincount(bi[inner], minlength=nb)
+    within_hot = np.bincount(bi[inner], weights=hot[inner], minlength=nb)
+    inverse = np.searchsorted(pairs, bi[~inner] * nb + bj[~inner])
+    between = np.bincount(inverse, minlength=len(pairs))
+    between_hot = np.bincount(inverse, weights=hot[~inner], minlength=len(pairs))
+
+    one, zero = value_names(model.kind)
+    name = "s" if model.kind == "ising" else "x"
+    share = ones / sizes
+    # Mixed blocks stay neutral so that each value keeps the color it has everywhere.
+    groups = [f"mostly {one}" if f >= 2 / 3 else f"mostly {zero}" if f <= 1 / 3 else None
+              for f in share]
+    labels = [f"block {k}" for k in range(nb)]
+    node_tips = [f"block {k}: {name}[{k * size}..{k * size + int(sizes[k]) - 1}] · "
+                 f"{fmt(int(ones[k]))} of {fmt(int(sizes[k]))} are {one} · "
+                 f"{fmt(int(within[k]))} couplings inside, {fmt(int(within_hot[k]))} "
+                 "raising the objective" for k in range(nb)]
+    edges, edge_tips = [], []
+    for key, c, h in zip(pairs.tolist(), between.tolist(), between_hot.tolist()):
+        u, v = divmod(key, nb)
+        edges.append((u, v, None, "highlight" if h else "plain"))
+        edge_tips.append(f"block {u} – block {v} · {fmt(c)} couplings, {fmt(int(h))} "
+                         "raising the objective")
+    names = {"highlight": "blocks sharing a coupling that raises the objective",
+             "plain": "blocks sharing only couplings that lower it or are inactive",
+             "violated": "", "ungrouped": "mixed"}
+    caption = (f"Each node is a block of {fmt(size)} consecutive variables, colored by the "
+               f"share set to {one} in the best sample. An edge joins two blocks with a "
+               f"coupling between them; couplings inside a block are counted in its "
+               "hover text.")
+    return network_figure("model", "Model in its best state", caption, labels, groups,
+                          [f"mostly {one}", f"mostly {zero}"], edges, names,
+                          node_tips=node_tips, edge_tips=edge_tips, edge_legend=True, soft=True,
+                          simplified=f"the coupling graph groups the variables into "
+                                     f"{fmt(nb)} blocks of {fmt(size)}")
 
 
 def strip_figure(result: dict):
     sample = result["best_sample"]
     n = len(sample)
     if n > MAX_STRIP:
-        return None
+        return coarse_strip_figure(result)
     ncol = n if n <= 48 else (64 if n <= 1024 else 128)
-    rows = [sample[k:k + ncol] + [None] * (ncol - len(sample[k:k + ncol]))
+    # A QUBO 0 takes the −1 pole, so both values draw at full strength.
+    poles = sample if result["type"] == "ising" else [2 * x - 1 for x in sample]
+    rows = [poles[k:k + ncol] + [None] * (ncol - len(poles[k:k + ncol]))
             for k in range(0, n, ncol)]
-    spin = result["type"] == "ising"
-    name = "s" if spin else "x"
-    body, height = draw_grid(rows, tip_of=lambda r, c, val: f"{name}[{r * ncol + c}] = {val}",
-                             cell_max=14, kind="spin" if spin else "binary")
+    name = "s" if result["type"] == "ising" else "x"
+    body, height = draw_grid(rows, tip_of=lambda r, c, val: f"{name}[{r * ncol + c}] = "
+                                                            f"{sample[r * ncol + c]}",
+                             cell_max=14, kind="spin", poles=value_names(result["type"]))
     return Figure("state", "Best sample",
                   f"All {fmt(n)} variables in index order, left to right, top to bottom.",
                   height, body)
+
+
+def coarse_strip_figure(result: dict) -> Figure:
+    """The best sample as the share of set variables per consecutive block."""
+    import numpy as np
+
+    sample = np.asarray(result["best_sample"])
+    n = len(sample)
+    size, nb = blocks(n, MAX_STRIP)
+    sizes = np.minimum(size, n - np.arange(nb) * size)
+    ones = np.bincount(np.arange(n) // size, weights=sample > 0, minlength=nb)
+    share = ones / sizes
+    # The scale spans the shares present: the lowest takes the solid unset color,
+    # the highest the solid set color, so near-equal blocks still tell apart. One
+    # share alone keeps the absolute scale.
+    lo, hi = float(share.min()), float(share.max())
+    t = (share - lo) / (hi - lo) if hi > lo else share
+    mean = (2 * t - 1).tolist()
+    ncol = 128
+    rows = [mean[k:k + ncol] + [None] * (ncol - len(mean[k:k + ncol]))
+            for k in range(0, nb, ncol)]
+    name = "s" if result["type"] == "ising" else "x"
+    one, zero = value_names(result["type"])
+    low, high = percents(lo, hi)
+
+    def tip_of(r, c, val):
+        k = r * ncol + c
+        return (f"{name}[{k * size}..{k * size + int(sizes[k]) - 1}]: "
+                f"{fmt(int(ones[k]))} of {fmt(int(sizes[k]))} are {one}")
+
+    if len(np.unique(share)) > 2:
+        legend = {"gradient": (low, f"{high} set to {one}")}
+        how = (f"A cell is colored by the share of its block set to {one}, on a scale "
+               f"from {low} ({zero} color) to {high} ({one} color) that is lighter in "
+               "between.")
+    elif {lo, hi} <= {0.0, 1.0}:
+        legend = {"poles": (one, zero)}
+        how = "Every block holds a single value."
+    elif lo == hi:
+        legend = {"poles": (one, zero)}
+        how = f"Every block is {low} set to {one}."
+    else:
+        legend = {"poles": (f"{high} set to {one}", f"{low} set to {one}")}
+        how = f"Every block is {low} or {high} set to {one}."
+    body, height = draw_grid(rows, tip_of=tip_of, cell_max=14, kind="spin", **legend)
+    return Figure("state", "Best sample",
+                  f"{fmt(n)} variables in {fmt(nb)} blocks of {fmt(size)}, in index order, "
+                  f"left to right, top to bottom. {how}", height, body,
+                  simplified=f"the best-sample strip shows the share set to {one} per "
+                             f"block of {fmt(size)} variables")
+
+
+def percents(lo: float, hi: float) -> tuple:
+    """Two shares as percentages with the fewest decimals that tell them apart."""
+    for digits in range(4):
+        a, b = f"{lo:.{digits}%}", f"{hi:.{digits}%}"
+        if a != b or lo == hi:
+            return a, b
+    return a, b
 
 
 # --------------------------------------------------------------------- page
@@ -1447,7 +1636,7 @@ font-size:13px;font-weight:600;border:1px solid var(--line);color:var(--ink2)}
 .tile,.card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
 .tile{padding:14px 16px}
 .tile .label{font-size:12px;color:var(--ink2)}
-.tile .value{font-size:26px;font-weight:650;line-height:1.25;overflow-wrap:anywhere}
+.tile .value{font-size:24px;font-weight:650;line-height:1.25;overflow-wrap:break-word}
 .tile .note{font-size:12px;color:var(--muted)}
 .card{padding:18px 18px 14px;margin-bottom:14px}
 .caption,.note{color:var(--ink2);font-size:13px;margin:0 0 6px;max-width:80ch}
@@ -1459,6 +1648,20 @@ ul.checks li:first-child{border-top:0}
 .detail{color:var(--ink2)}
 details{margin-top:8px;font-size:13px}
 summary{cursor:pointer;color:var(--ink2)}
+details dl{margin-top:6px}
+.run{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;
+margin-bottom:14px}
+.run .card{margin:0}
+.run h3{margin-bottom:12px}
+.run dl{row-gap:8px}
+dd .sub{display:block;color:var(--muted);font-size:12px}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px;
+padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.stat .label{font-size:12px;color:var(--ink2)}
+.stat .value{font-size:20px;font-weight:650;line-height:1.3;font-variant-numeric:tabular-nums}
+.stat .note{font-size:12px;color:var(--muted)}
+details.meta{margin-top:0;padding:12px 18px}
+details.meta[open] summary{margin-bottom:10px}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;font-size:13px;margin:8px 0;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:5px 12px 5px 0;border-bottom:1px solid var(--line);vertical-align:top}
@@ -1472,6 +1675,7 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 #vq-tip{position:fixed;z-index:9;pointer-events:none;background:var(--ink);color:var(--surface);
 font-size:12px;padding:5px 9px;border-radius:6px;max-width:320px}
 footer{margin-top:40px;color:var(--muted);font-size:12px}
+footer+footer{margin-top:6px}
 """
 
 PAGE_CSS = PAGE_CSS.replace("FONT", FONT)
@@ -1564,7 +1768,7 @@ APP_JS = """
 def figure_card(fig: Figure) -> str:
     parts = ['<section class="card">']
     if fig.title:
-        parts.append(f"<h3>{esc(fig.title)}</h3>")
+        parts.append(f"<h3>{esc(fig.title)}{'*' if fig.simplified else ''}</h3>")
     if fig.caption:
         parts.append(f'<p class="caption">{esc(fig.caption)}</p>')
     parts.append(f'<div class="scroll">{fig.svg()}</div>')
@@ -1591,7 +1795,7 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
     """The report's title and body markup. ``result`` is the document
     `summarize` builds; ``model`` adds the coupling graph and needs it."""
     title = "VeloxQ solve"
-    head, tiles, sections = [], [], []
+    head, tiles, sections, footnotes = [], [], [], []
     if view is not None:
         check_shape(view)
         take(view, "view", ["title", "checks"], ["subtitle", "summary", "notes", "views"])
@@ -1614,8 +1818,9 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
             if not isinstance(c["ok"], bool):
                 fail(f"view.checks[{k}].ok must be true or false, got {c['ok']!r}")
         for k, t in enumerate(items_of(view.get("summary", []), "view.summary")):
-            take(t, f"view.summary[{k}]", ["label", "value"], ["note"])
-            tiles.append((t["label"], fmt(t["value"]), t.get("note")))
+            take(t, f"view.summary[{k}]", ["label", "value"], ["note", "unit"])
+            tiles.append((t["label"], with_unit(t["value"], str(t.get("unit", ""))),
+                          t.get("note")))
         failed = [c for c in checks if not c["ok"]]
         if failed:
             head.append(f'<span class="pill bad">✗ Infeasible: {len(failed)} of '
@@ -1671,11 +1876,12 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
         axis = "Ising energy" if kind == "ising" else "QUBO objective"
         at_best, total = result["num_samples_at_best"], result["num_samples"]
         if not tiles:
-            tiles = [(f"Best {axis}", fmt(result["best_objective"]), None),
+            tiles = [(f"Best {axis}", with_unit(result["best_objective"], ENERGY_UNIT), None),
                      ("Samples at the best value", f"{fmt(at_best)} of {fmt(total)}", None),
                      ("Variables", fmt(result["num_variables"]), None)]
         quality = [f'<p class="caption">{fmt(at_best)} of {fmt(total)} samples reached '
-                   f'the best {axis} of {esc(fmt(result["best_objective"]))}.</p>']
+                   f'the best {axis} of '
+                   f'{esc(with_unit(result["best_objective"], ENERGY_UNIT))}.</p>']
         dist = result.get("objective_distribution")
         fig = distribution_figure(dist, kind) if dist else None
         if fig is not None:
@@ -1690,46 +1896,41 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
                     else "".join(str(x) for x in t["sample"])] if compact else [])
                 for k, t in enumerate(top)]
         quality.append('<section class="card"><h3>Best distinct samples</h3>'
-                       + html_table(["rank", axis] + (["state"] if compact else []), rows,
+                       + html_table(["rank", col_name(axis, ENERGY_UNIT)]
+                                    + (["state"] if compact else []), rows,
                                     limit=TWIN_ROWS)
                        + "</section>")
         sections.append("<h2>Sample quality</h2>" + "".join(quality))
 
-        parts = []
+        parts, figs = [], []
         if model is not None:
             figs, notes, stats = model_figures(result, model)
             parts.append(tiles_html([(a, b, None) for a, b in stats]))
             parts += [figure_card(f) for f in figs]
             parts += [f'<p class="note">{esc(n)}</p>' for n in notes]
-        strip = strip_figure(result)
-        if strip is not None:
-            parts.append(figure_card(strip))
-        else:
-            ones = sum(1 for x in result["best_sample"] if x > 0)
-            parts.append(f'<p class="note">The best sample sets {fmt(ones)} of '
-                         f'{fmt(result["num_variables"])} variables to '
-                         f'{"+1" if kind == "ising" else "1"}. The per-variable '
-                         f"strip is drawn up to {fmt(MAX_STRIP)} variables.</p>")
+        figs.append(strip_figure(result))
+        parts.append(figure_card(figs[-1]))
         sections.append("<h2>Model</h2>" + "".join(parts))
+        simplified = [f.simplified for f in figs if f.simplified]
+        if simplified:
+            footnotes.append(f"* Simplified for {fmt(result['num_variables'])} variables: "
+                             + "; ".join(simplified) + ".")
 
-        details = [("Solver", result.get("solver")),
-                   ("Model", f"{kind} ({result['vartype']})"),
-                   ("Variables", fmt(result["num_variables"])),
-                   ("Samples returned", fmt(total)),
-                   (f"Best {axis}", fmt(result["best_objective"]))]
-        details += [(f"Platform {k}", val)
-                    for k, val in result.get("platform_info", {}).items()]
-        cells = [(k, esc(val)) for k, val in details if val is not None]
-        job_id = result.get("job_id")
-        if job_id:
-            cells.insert(1, ("Job id", f'<a href="{JOB_URL}{quote(str(job_id), safe="")}" '
-                                       f'target="_blank" rel="noopener noreferrer">'
-                                       f"{esc(job_id)}</a>"))
-        dl = "".join(f"<dt>{esc(k)}</dt><dd>{html}</dd>" for k, html in cells)
-        sections.append(f'<h2>Run details</h2><section class="card"><dl>{dl}</dl></section>')
+        cards = [job_card(result, axis)]
+        if result.get("statistics"):
+            cards.append(usage_card(result["statistics"]))
+        run = f'<div class="run">{"".join(cards)}</div>'
+        meta = [(k, esc(val), None) for k, val in result.get("result_info", {}).items()]
+        if meta:
+            run += ('<details class="card meta"><summary>Solver metadata</summary>'
+                    f"<dl>{dl_html(meta)}</dl></details>")
+        sections.append(f"<h2>Run details</h2>{run}")
 
-    footer = ("<footer>Objective values are recomputed locally from the returned "
-              "samples.</footer>" if result is not None else "")
+    if result is not None:
+        footnotes.append("Objective values are recomputed locally from the returned samples.")
+        footnotes.append(f"Energies are in units of the coupling {ENERGY_UNIT}: a coefficient "
+                         f"of 1 in the submitted model is 1 {ENERGY_UNIT}.")
+    footer = "".join(f"<footer>{esc(f)}</footer>" for f in footnotes)
     subtitle = (f'<p class="subtitle">{esc(view["subtitle"])}</p>'
                 if view is not None and view.get("subtitle") else "")
     body = (f'<p class="eyebrow">VeloxQ solution report</p><h1>{esc(title)}</h1>'
@@ -1737,6 +1938,101 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
             f'{"".join(sections)}{footer}')
     check_size(len(body.encode("utf-8")), "the report would be")
     return title, body
+
+
+def dl_html(rows) -> str:
+    """Label, value markup and optional note of each row, as a definition list."""
+    return "".join(f"<dt>{esc(k)}</dt><dd>{html}"
+                   + (f'<span class="sub">{esc(note)}</span>' if note else "") + "</dd>"
+                   for k, html, note in rows)
+
+
+def duration(seconds: float) -> str:
+    if seconds == 0:
+        return "0 s"
+    if seconds < 1:
+        return f"{seconds * 1000:.3g} ms"
+    if seconds < 60:
+        return f"{seconds:.3g} s"
+    minutes, rest = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes} min {rest} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes} min"
+
+
+def dollars(x: float) -> str:
+    """Cents above a dollar, two significant digits below it."""
+    if x == 0 or abs(x) >= 1:
+        return f"${x:,.2f}"
+    return f"${x:.{max(2, 1 - math.floor(math.log10(abs(x))))}f}"
+
+
+def job_card(result: dict, axis: str) -> str:
+    kind = "Ising" if result["type"] == "ising" else "QUBO"
+    variables = "spin" if result["vartype"] == "SPIN" else "binary"
+    backend = result.get("backend") or {}
+    job_id = result.get("job_id")
+    finished = result.get("finished_at")
+    if finished:
+        finished = (datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                    .astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+    rows = [("Solver", result.get("solver"), None),
+            ("Backend", backend.get("name"), backend.get("description")),
+            ("Job id", job_id, None),
+            ("Model", kind, f"{fmt(result['num_variables'])} {variables} variables"),
+            ("Samples", fmt(result["num_samples"]),
+             f"{fmt(result['num_samples_at_best'])} at the best value"),
+            (f"Best {axis}", with_unit(result["best_objective"], ENERGY_UNIT), None),
+            ("Finished", finished, None)]
+    cells = [(k, esc(v), note) for k, v, note in rows if v is not None]
+    if job_id:
+        cells = [(k, f'<a href="{JOB_URL}{quote(str(job_id), safe="")}" target="_blank" '
+                     f'rel="noopener noreferrer">{html}</a>' if k == "Job id" else html, note)
+                 for k, html, note in cells]
+    return f'<section class="card"><h3>Job</h3><dl>{dl_html(cells)}</dl></section>'
+
+
+def usage_card(stats: dict) -> str:
+    """Time, quota and cost of the job from the platform's statistics. A
+    statistic the platform left out is not shown."""
+    def has(*keys):
+        return all(stats.get(k) is not None for k in keys)
+
+    tiles = []
+    if has("usage_time"):
+        tiles.append(("API time", duration(stats["usage_time"]),
+                      f"{duration(stats['pending_time'])} pending, "
+                      f"{duration(stats['running_time'])} running"
+                      if has("pending_time", "running_time") else None))
+    if has("quota_solver_time"):
+        tiles.append(("Solver time", duration(stats["quota_solver_time"]),
+                      f"{duration(stats['cost_solver_time'])} billed"
+                      if has("cost_solver_time") else None))
+    if has("total_quota_usage"):
+        tiles.append(("Quota used", f"{fmt(stats['total_quota_usage'])} ms", None))
+    if has("total_cost"):
+        tiles.append(("Cost", dollars(stats["total_cost"]),
+                      f"at {dollars(stats['solver_cost'])}/s"
+                      if has("solver_cost") else None))
+    rows = []
+    if has("solver_usage_scale"):
+        rows.append(("Solver multiplier", f"×{fmt(stats['solver_usage_scale'])}", "quota"))
+    cost, usage = stats.get("backend_cost_scale"), stats.get("backend_usage_scale")
+    if cost is not None and cost == usage:
+        rows.append(("Backend multiplier", f"×{fmt(cost)}", "cost and quota"))
+    elif cost is not None or usage is not None:
+        rows.append(("Backend multiplier", ", ".join(
+            f"×{fmt(x)} {what}" for x, what in ((cost, "cost"), (usage, "quota"))
+            if x is not None), None))
+    stat = "".join(f'<div class="stat"><div class="label">{esc(label)}</div>'
+                   f'<div class="value">{esc(value)}</div>'
+                   + (f'<div class="note">{esc(note)}</div>' if note else "") + "</div>"
+                   for label, value, note in tiles)
+    return ('<section class="card"><h3>Usage and cost</h3>'
+            + (f'<div class="stats">{stat}</div>' if stat else "")
+            + (f"<dl>{dl_html([(k, esc(v), n) for k, v, n in rows])}</dl>" if rows else "")
+            + "</section>")
 
 
 def check_size(size: int, what: str) -> None:

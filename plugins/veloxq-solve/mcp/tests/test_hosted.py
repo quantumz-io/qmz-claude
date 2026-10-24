@@ -275,7 +275,7 @@ class TestTools(HostedCase):
 
     def test_rejected_credentials_point_to_the_connector(self):
         token = self.token()
-        self.api.add("GET", "/jobs/job-9", {"message": "gone"}, status_code=403)
+        self.api.add("GET", "/jobs/job-9", {"message": "insufficient scope"}, status_code=403)
         out = self.call("get_job", token, job_id="job-9")
         self.assertIn("reconnect the VeloxQ connector", out["content"][0]["text"])
         self.assertNotIn("`connect`", out["content"][0]["text"])

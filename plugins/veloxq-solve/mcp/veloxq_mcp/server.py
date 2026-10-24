@@ -64,6 +64,9 @@ MAX_SUBMISSIONS = int(os.environ.get("VELOXQ_MCP_MAX_SUBMISSIONS", "100"))
 """Jobs the server submits for one user within SUBMISSION_WINDOW. A ceiling
 against runaway loops."""
 
+INLINE_SAMPLE_VARIABLES = 1000
+"""Above this many variables an answer that has an output file leaves the samples in it."""
+
 SUBMISSION_WINDOW: float | None = None
 """Seconds over which MAX_SUBMISSIONS counts; None means the process lifetime.
 The hosted server sets an hour."""
@@ -159,6 +162,8 @@ def _tool_error(exc: BaseException) -> ToolError:
                      "Call `connect` to connect again.")
             return ToolError(f"VeloxQ rejected the credentials (401: {message}). {again}")
         if status == 403:
+            if "scope" not in message.lower():
+                return ToolError(f"VeloxQ refused the action (403: {message}).")
             again = ("Disconnect and reconnect the VeloxQ connector to grant it." if HOSTED else
                      "`disconnect` and `connect` again to grant it.")
             return ToolError(f"VeloxQ refused the action (403: {message}). "
@@ -506,7 +511,10 @@ def catalog(*, refresh: bool = False) -> list[dict[str, Any]]:
                  "usage_scale": backends.get(b["id"], {}).get("usageScale")}
                 for b in s.get("supportBackend", [])]
             solver.pop("support_backend", None)
-            for p in solver.get("parameters", []):
+            # The platform refuses a timeout from accounts without the permission to set one.
+            solver["parameters"] = [p for p in solver.get("parameters", [])
+                                    if p.get("type") != "timeout"]
+            for p in solver["parameters"]:
                 p["values"] = [v.get("value") for v in (p.get("values") or [])]
             solvers.append(solver)
         _catalog[principal] = (time.monotonic(), solvers)
@@ -551,18 +559,22 @@ def resolve_backend(solver: dict[str, Any], backend: str | None) -> dict[str, An
 
 
 def validate_parameters(solver: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
-    """Check names, types and ranges against the solver's schema; return the coerced values."""
+    """Check names, types and ranges against the solver's schema; return the coerced
+    values, with the schema's default for every omitted parameter that has one."""
     schema = {p["name"]: p for p in solver.get("parameters", [])}
     unknown = sorted(set(parameters) - set(schema))
     if unknown:
         raise ToolError(f"unknown parameters for {solver['name']}: {unknown}; "
                         f"known: {sorted(schema)}")
+    # The platform fails to load a job whose parameters are empty.
+    defaults = {name: p["default"] for name, p in schema.items()
+                if p.get("default") not in (None, "")}
     out: dict[str, Any] = {}
-    for name, value in parameters.items():
+    for name, value in {**defaults, **parameters}.items():
         p = schema[name]
         kind = p.get("type")
         try:
-            if kind in ("integer", "timeout"):
+            if kind == "integer":
                 coerced = int(value)
                 if coerced != float(value):
                     raise ValueError
@@ -580,7 +592,7 @@ def validate_parameters(solver: dict[str, Any], parameters: dict[str, Any]) -> d
                 coerced = str(value)
         except (TypeError, ValueError):
             raise ToolError(f"parameter {name} must be a {kind}, got {value!r}") from None
-        if kind in ("integer", "float", "timeout"):
+        if kind in ("integer", "float"):
             lo, hi = p.get("min"), p.get("max")
             if lo is not None and coerced < lo:
                 raise ToolError(f"parameter {name} must be >= {lo}, got {coerced}")
@@ -649,7 +661,7 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
             "running_seconds": stats.get("running_time"),
             "solver_seconds": stats.get("cost_solver_time"),
             "total_cost_usd": stats.get("total_cost"),
-            "quota_usage": stats.get("total_quota_usage"),
+            "quota_usage_ms": stats.get("total_quota_usage"),
         }
     if j.get("timeline"):
         out["timeline"] = j["timeline"]
@@ -1021,7 +1033,8 @@ def get_result(
     `top` (at most 100) is the number of distinct best samples returned.
     `output` writes the full result document as JSON (an absolute path ending
     in .json), for a script that decodes the samples; an existing file is
-    kept unless `overwrite` is true.
+    kept unless `overwrite` is true. With `output` and more than 1,000
+    variables the answer leaves the samples out and keeps their objectives.
     `path` and `output` are files on this machine and are not available on
     the hosted server. The sample matrix itself is never returned inline.
     """
@@ -1036,7 +1049,13 @@ def get_result(
     if out_path is not None:
         _write_output(out_path, json.dumps(doc, indent=2) + "\n", overwrite)
         doc["output"] = str(out_path)
-    doc.pop("platform_info", None)
+        if doc["num_variables"] > INLINE_SAMPLE_VARIABLES:
+            del doc["best_sample"]
+            doc["top"] = [{"objective": t["objective"]} for t in doc["top"]]
+            doc["samples"] = (f"best_sample and the top samples have {doc['num_variables']} "
+                              f"values each and are in {out_path}")
+    doc.pop("result_info", None)
+    doc.pop("statistics", None)
     return doc
 
 
@@ -1056,6 +1075,11 @@ def _job_result(job_id: str, model: Model | None, top: int) -> dict[str, Any]:
     doc = summarize(job.result, model, top)
     doc["job_id"] = job_id
     doc["solver"] = (raw.get("solver") or {}).get("name")
+    doc["statistics"] = _snake(raw.get("statistics") or {})
+    backend = raw.get("backend")
+    doc["backend"] = ({"name": backend.get("name"), "description": backend.get("description")}
+                      if backend else None)
+    doc["finished_at"] = raw.get("finishedAt")
     return doc
 
 

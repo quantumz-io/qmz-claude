@@ -80,6 +80,18 @@ class TestSummarize(unittest.TestCase):
         with self.assertRaisesRegex(ResultError, "expected 0..2"):
             summarize(sampleset([[1, 1]], [0.0], variables=[0, 1]), self.model, top=1)
 
+    def test_decimal_string_labels_name_the_variables(self):
+        # The platform labels result columns with strings such as "0".
+        samples = [[-1, 1, 1], [1, -1, -1]]
+        doc = summarize(sampleset(samples, [-1.5, -1.5], variables=["2", "0", "1"]),
+                        self.model, top=5)
+        self.assertEqual(doc["best_sample"], [1, 1, -1])
+
+    def test_float_variable_labels_are_an_error(self):
+        with self.assertRaisesRegex(ResultError, "unexpected variables"):
+            summarize(sampleset([[1, 1, 1]], [0.0], variables=[0.5, 1.5, 2.5]),
+                      self.model, top=1)
+
     def test_degeneracy_warning(self):
         flat = model_from_spec({"type": "ising", "quadratic": [[0, 1, 0.0], [1, 2, 0.0]]})
         samples = [[1, 1, 1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]]

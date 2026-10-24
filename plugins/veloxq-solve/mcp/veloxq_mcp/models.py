@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 
 MAX_INLINE_COEFFICIENTS = 20_000
 """Largest number of coefficients accepted in an inline spec. Larger models go
@@ -29,6 +32,16 @@ a variable, so one coefficient at a huge index would allocate them all."""
 MAX_INLINE_MATRIX_ROWS = 500
 """Largest inline dense matrix. Every cell is read, so the cell count, not the
 nonzero count, is what costs memory and time."""
+
+MAX_VARIABLES = 100_000_000
+"""Largest variable count of any model, the platform's own scale. The biases
+are held densely, so the index range, not the coefficient count, sets the
+memory a model takes; the dimod model built from it adds about 100 MB per
+million variables."""
+
+MAX_DENSE_ROWS = 20_000
+"""Largest dense square matrix read from a file, 3.2 GB of float64. Larger
+models go through the sparse native layout."""
 
 SPEC_EXTENSIONS = (".json",)
 HDF5_EXTENSIONS = (".h5", ".hdf5")
@@ -48,21 +61,50 @@ class InlineLimitError(ModelError):
 
 @dataclass
 class Model:
-    """A quadratic model over variables ``0..n-1``.
+    """A quadratic model over variables ``0..n-1``, held as arrays.
 
-    ``kind`` is ``"qubo"`` or ``"ising"``. ``quadratic`` holds each pair once,
-    keyed ``(i, j)`` with ``i < j``. ``native_path`` is set when the model came
-    from an HDF5 file in the platform's own layout, which is uploaded as is.
-    ``labels`` are the variable names stored in such a file, if any.
+    ``kind`` is ``"qubo"`` or ``"ising"``. ``biases`` holds the linear
+    coefficient of every variable, zero where the model has none, so its
+    length is ``n``. ``rows``, ``cols`` and ``values`` hold each coupling
+    once, with ``rows < cols`` and no pair repeated. ``native_path`` is set
+    when the model came from an HDF5 file in the platform's own layout, which
+    is uploaded as is. ``labels`` are the variable names stored in such a
+    file, if any.
     """
 
     kind: str
-    linear: dict[int, float]
-    quadratic: dict[tuple[int, int], float]
-    n: int
+    biases: np.ndarray
+    rows: np.ndarray
+    cols: np.ndarray
+    values: np.ndarray
     labels: list[str] | None = None
     native_path: str | None = None
     notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        import numpy as np
+
+        self.biases = np.asarray(self.biases, dtype=float)
+        self.rows = np.asarray(self.rows, dtype=np.int64)
+        self.cols = np.asarray(self.cols, dtype=np.int64)
+        self.values = np.asarray(self.values, dtype=float)
+        if self.biases.ndim != 1 or self.biases.size == 0:
+            raise ModelError("the model has no variables")
+        if self.n > MAX_VARIABLES:
+            raise ModelError(f"the model has {self.n} variables, above the limit of "
+                             f"{MAX_VARIABLES}")
+        if not self.rows.shape == self.cols.shape == self.values.shape or self.rows.ndim != 1:
+            raise ModelError("rows, cols and values must be vectors of one length")
+        if self.rows.size and (self.rows.min() < 0 or self.cols.max() >= self.n):
+            raise ModelError(f"coupling indices must lie in 0..{self.n - 1}")
+        if not (self.rows < self.cols).all():
+            raise ModelError("couplings must have rows < cols")
+        if not (np.isfinite(self.biases).all() and np.isfinite(self.values).all()):
+            raise ModelError("coefficients must be finite numbers")
+
+    @property
+    def n(self) -> int:
+        return len(self.biases)
 
     @property
     def vartype(self) -> str:
@@ -70,29 +112,56 @@ class Model:
 
     @property
     def num_interactions(self) -> int:
-        return len(self.quadratic)
+        return len(self.values)
+
+    @property
+    def linear(self) -> dict[int, float]:
+        """The nonzero linear terms keyed by variable."""
+        import numpy as np
+
+        return {int(i): float(self.biases[i]) for i in np.flatnonzero(self.biases)}
+
+    @property
+    def quadratic(self) -> dict[tuple[int, int], float]:
+        """The couplings keyed ``(i, j)`` with ``i < j``."""
+        return {(int(i), int(j)): float(v)
+                for i, j, v in zip(self.rows, self.cols, self.values)}
 
     def bqm(self):
         """The dimod model with every index ``0..n-1`` present."""
         import dimod
 
-        if self.kind == "qubo":
-            q = dict(self.quadratic)
-            for i, v in self.linear.items():
-                q[(i, i)] = q.get((i, i), 0.0) + v
-            bqm = dimod.BinaryQuadraticModel.from_qubo(q)
-        else:
-            diag = [ij for ij in self.quadratic if ij[0] == ij[1]]
-            if diag:
-                raise ModelError(
-                    f"ising model has diagonal quadratic entries {diag}; "
-                    "self-couplings are linear terms, put them in 'linear'")
-            bqm = dimod.BinaryQuadraticModel.from_ising(self.linear, self.quadratic)
-        # The platform works on dense index ranges: every index must exist so
-        # the returned state columns line up with 0..n-1.
-        for i in range(self.n):
-            bqm.add_variable(i, 0.0)
-        return bqm
+        return dimod.BinaryQuadraticModel.from_numpy_vectors(
+            self.biases, (self.rows, self.cols, self.values), 0.0, self.vartype)
+
+
+def _couplings(i, j, v, *, combine: str):
+    """Canonical coupling arrays from off-diagonal triples: each pair once,
+    ``rows < cols``. A pair given more than once, in either order, is summed
+    (``combine="sum"``) or must carry one value (``combine="same"``)."""
+    import numpy as np
+
+    i, j, v = (np.asarray(i, dtype=np.int64), np.asarray(j, dtype=np.int64),
+               np.asarray(v, dtype=float))
+    if not np.isfinite(v).all():
+        raise ModelError("coefficients must be finite numbers")
+    if not i.size:
+        return i, j, v
+    lo, hi = np.minimum(i, j), np.maximum(i, j)
+    span = int(hi.max()) + 1
+    # One int64 per pair: lo, hi < span <= MAX_VARIABLES keeps the key below 2**62.
+    key = lo * span + hi
+    uniq, first, inverse = np.unique(key, return_index=True, return_inverse=True)
+    if combine == "sum":
+        values = np.bincount(inverse, weights=v, minlength=len(uniq))
+    else:
+        values = v[first]
+        off = np.flatnonzero(~np.isclose(v, values[inverse]))
+        if off.size:
+            k = int(off[0])
+            raise ModelError(f"coupling ({lo[k]},{hi[k]}) is given with two values, "
+                             f"{values[inverse[k]]} and {v[k]}")
+    return *np.divmod(uniq, span), values
 
 
 def load_model(spec: dict | None = None, path: str | None = None,
@@ -133,6 +202,8 @@ def _index(value: Any) -> int:
 
 def model_from_spec(spec: dict, *, inline: bool = True) -> Model:
     """Parse the JSON spec. ``inline`` enforces ``MAX_INLINE_COEFFICIENTS``."""
+    import numpy as np
+
     if not isinstance(spec, dict):
         raise ModelError("the spec must be a JSON object")
     kind = spec.get("type")
@@ -160,55 +231,107 @@ def model_from_spec(spec: dict, *, inline: bool = True) -> Model:
         if len(matrix) > MAX_INLINE_MATRIX_ROWS:
             raise InlineLimitError(f"the inline matrix has {len(matrix)} rows, above the "
                                    f"limit of {MAX_INLINE_MATRIX_ROWS}")
-    quadratic: dict[tuple[int, int], float] = {}
-    for entry in entries:
+    i, j, v = _triples(entries)
+    if matrix:
         try:
-            i, j, v = entry
-            i, j, v = _index(i), _index(j), float(v)
+            dense = np.asarray(matrix, dtype=float)
+            if dense.ndim != 2 or dense.shape[0] != dense.shape[1]:
+                raise ValueError
         except (TypeError, ValueError) as err:
-            raise ModelError(f"quadratic entry {entry!r} is not [i, j, value]") from err
-        key = (min(i, j), max(i, j))
-        quadratic[key] = quadratic.get(key, 0.0) + v
-    if matrix and any(len(row) != len(matrix) for row in matrix):
-        raise ModelError('"matrix" must be square')
-    for i, row in enumerate(matrix):
-        for j, v in enumerate(row):
-            if v:
-                key = (min(i, j), max(i, j))
-                quadratic[key] = quadratic.get(key, 0.0) + float(v)
+            raise ModelError('"matrix" must be a square matrix of numbers') from err
+        mi, mj = np.nonzero(dense)
+        i, j, v = np.r_[i, mi], np.r_[j, mj], np.r_[v, dense[mi, mj]]
 
     try:
         if isinstance(lin, dict):
-            linear = {_index(k): float(v) for k, v in lin.items()}
+            lin_idx = np.array([_index(k) for k in lin], dtype=np.int64)
+            lin_val = np.array([float(x) for x in lin.values()], dtype=float)
         else:
-            linear = {i: float(v) for i, v in enumerate(lin) if v}
-    except (TypeError, ValueError) as err:
+            lin_val = np.asarray(lin, dtype=float)
+            if lin_val.ndim != 1:
+                raise ValueError
+            # A zero in the list is not a term; only terms define variables.
+            lin_idx = np.flatnonzero(lin_val)
+            lin_val = lin_val[lin_idx]
+    except (TypeError, ValueError, OverflowError) as err:
         raise ModelError('"linear" must be a list of numbers or an {"i": value} map') from err
+    if len(set(lin_idx.tolist())) != len(lin_idx):
+        raise ModelError('"linear" names a variable twice')
 
-    for i, j in [ij for ij in quadratic if ij[0] == ij[1]]:
+    if (i.size and i.min() < 0) or (j.size and j.min() < 0) or (lin_idx.size and lin_idx.min() < 0):
+        raise ModelError("variable indices must be >= 0")
+    n = 1 + max([-1] + [int(x.max()) for x in (i, j, lin_idx) if x.size])
+    if inline and n > MAX_INLINE_VARIABLES:
+        raise InlineLimitError(f"variable index {n - 1} is above the inline limit of "
+                               f"{MAX_INLINE_VARIABLES - 1}")
+    if n > MAX_VARIABLES:
+        raise ModelError(f"variable index {n - 1} is above the limit of {MAX_VARIABLES - 1}")
+    biases = np.zeros(n)
+    np.add.at(biases, lin_idx, lin_val)
+    diag = i == j
+    if diag.any():
         if kind == "ising":
-            raise ModelError(f"ising model has a diagonal entry at ({i},{i}); "
+            k = int(i[diag][0])
+            raise ModelError(f"ising model has a diagonal entry at ({k},{k}); "
                              "self-couplings are linear terms, put them in 'linear'")
-        linear[i] = linear.get(i, 0.0) + quadratic.pop((i, j))
+        np.add.at(biases, i[diag], v[diag])
+    rows, cols, values = _couplings(i[~diag], j[~diag], v[~diag], combine="sum")
 
-    count = len(linear) + len(quadratic)
+    count = int(np.count_nonzero(biases)) + len(values)
     if inline and count > MAX_INLINE_COEFFICIENTS:
         raise InlineLimitError(
             f"the inline spec has {count} coefficients, above the limit of "
             f"{MAX_INLINE_COEFFICIENTS}")
-    indices = set(linear) | {i for ij in quadratic for i in ij}
-    if not indices:
-        raise ModelError("the model has no variables")
-    if min(indices) < 0:
-        raise ModelError("variable indices must be >= 0")
-    if inline and max(indices) >= MAX_INLINE_VARIABLES:
-        raise InlineLimitError(f"variable index {max(indices)} is above the inline limit of "
-                               f"{MAX_INLINE_VARIABLES - 1}")
-    bad = [v for v in list(linear.values()) + list(quadratic.values())
-           if v != v or v in (float("inf"), float("-inf"))]
-    if bad:
-        raise ModelError("coefficients must be finite numbers")
-    return Model(kind=kind, linear=linear, quadratic=quadratic, n=max(indices) + 1)
+    return Model(kind=kind, biases=biases, rows=rows, cols=cols, values=values)
+
+
+def _triples(entries: list) -> tuple:
+    """The ``[i, j, value]`` entries of a spec as three arrays. A list of
+    plain numbers converts in one step; anything else is checked entry by
+    entry so the error names the offending one."""
+    import numpy as np
+
+    if not entries:
+        return (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros(0))
+    # A boolean index would convert to 0 or 1 unnoticed.
+    plain = all(isinstance(e, list) and len(e) == 3 and not isinstance(e[0], bool)
+                and not isinstance(e[1], bool) for e in entries)
+    raw = None
+    if plain:
+        try:
+            raw = np.asarray(entries)
+        except ValueError:      # ragged nesting inside an entry
+            pass
+    if raw is not None and raw.ndim == 2 and raw.dtype.kind in "iuf":
+        i, j, v = raw[:, 0], raw[:, 1], raw[:, 2].astype(float)
+        whole = (np.abs(i) < 2**63) & (np.abs(j) < 2**63)
+        if raw.dtype.kind == "f":
+            whole &= np.isfinite(i) & np.isfinite(j) & (i == np.floor(i)) & (j == np.floor(j))
+        if not whole.all():
+            k = int(np.flatnonzero(~whole)[0])
+            raise ModelError(f"quadratic entry {entries[k]!r} is not [i, j, value]")
+        return i.astype(np.int64), j.astype(np.int64), v
+    ii, jj, vv = [], [], []
+    for entry in entries:
+        try:
+            i, j, v = entry
+            ii.append(_index(i))
+            jj.append(_index(j))
+            vv.append(float(v))
+        except (TypeError, ValueError) as err:
+            raise ModelError(f"quadratic entry {entry!r} is not [i, j, value]") from err
+    try:
+        return (np.array(ii, dtype=np.int64), np.array(jj, dtype=np.int64),
+                np.array(vv, dtype=float))
+    except OverflowError:
+        raise ModelError(f"variable index {max(ii + jj)} is above the limit of "
+                         f"{MAX_VARIABLES - 1}") from None
+
+
+def _vector_length(dataset, what: str) -> int:
+    if len(dataset.shape) != 1:
+        raise ModelError(f"{what} must be a vector, got shape {dataset.shape}")
+    return int(dataset.shape[0])
 
 
 def h5_structure(path: str) -> str:
@@ -257,31 +380,47 @@ def model_from_h5(path: str, forced_type: str | None = None) -> Model:
     with h5py.File(path, "r") as f:
         if "Ising" in f and "biases" in f["Ising"] and "couplings" in f["Ising"]:
             g = f["Ising"]
-            biases = np.asarray(g["biases"], dtype=float)
-            n = len(biases)
+            n = _vector_length(g["biases"], f"{path}: biases")
+            if n > MAX_VARIABLES:
+                raise ModelError(f"{path} has {n} variables, above the limit of {MAX_VARIABLES}")
             c = g["couplings"]
-            quadratic = {}
             if isinstance(c, h5py.Group):
-                rows = np.asarray(c["I"], dtype=np.int64) - 1  # stored 1-based
-                cols = np.asarray(c["J"], dtype=np.int64) - 1
-                vals = np.asarray(c["V"], dtype=float)
+                lengths = {_vector_length(c[k], f"{path}: couplings/{k}") for k in "IJV"}
+                if len(lengths) != 1:
+                    raise ModelError(f"{path}: couplings I, J and V must be vectors "
+                                     "of one length")
+                i = np.asarray(c["I"], dtype=np.int64) - 1  # stored 1-based
+                j = np.asarray(c["J"], dtype=np.int64) - 1
+                v = np.asarray(c["V"], dtype=float)
             else:
+                if c.shape != (n, n):
+                    raise ModelError(f"{path}: a dense couplings matrix must be {n}x{n}")
+                if n > MAX_DENSE_ROWS:
+                    raise ModelError(f"{path}: a dense {n}x{n} couplings matrix is above "
+                                     f"the limit of {MAX_DENSE_ROWS} rows; store the "
+                                     "couplings as I, J, V vectors")
                 dense = np.asarray(c, dtype=float)
-                rows, cols = np.nonzero(dense)
-                vals = dense[rows, cols]
-            # Both symmetric halves hold the full pair value; the upper
-            # triangle alone recovers each coupling once.
-            for i, j, v in zip(rows, cols, vals):
-                if i < j:
-                    quadratic[(int(i), int(j))] = float(v)
-            linear = {i: float(v) for i, v in enumerate(biases) if v}
+                i, j = np.nonzero(dense)
+                v = dense[i, j]
+            biases = np.asarray(g["biases"], dtype=float)
+            if i.size and (min(i.min(), j.min()) < 0 or max(i.max(), j.max()) >= n):
+                raise ModelError(f"{path}: couplings index a variable outside 1..{n}")
+            notes = ["native platform HDF5 layout, uploaded as is"]
+            diag = i == j
+            if diag.any():
+                # A self-coupling of a spin is a constant, which the energy
+                # check tolerates as an offset.
+                notes.append(f"{int(diag.sum())} diagonal couplings ignored as constants")
+            # Each pair may be stored in both orders with the full value.
+            rows, cols, values = _couplings(i[~diag], j[~diag], v[~diag], combine="same")
             labels = None
             if "labels" in g:
                 labels = [x.decode() if isinstance(x, bytes) else str(x)
                           for x in np.asarray(g["labels"])]
-            return Model(kind="ising", linear=linear, quadratic=quadratic, n=n,
-                         labels=labels, native_path=path,
-                         notes=["native platform HDF5 layout, uploaded as is"])
+                if len(labels) != n:
+                    raise ModelError(f"{path}: {len(labels)} labels for {n} variables")
+            return Model(kind="ising", biases=biases, rows=rows, cols=cols, values=values,
+                         labels=labels, native_path=path, notes=notes)
 
         datasets = []
 
@@ -333,6 +472,10 @@ def model_from_h5(path: str, forced_type: str | None = None) -> Model:
                 found["linear"] = vectors[0]
 
         src = found.get("qubo") or found.get("quad") or found["matrix"]
+        if f[src].shape[0] > MAX_DENSE_ROWS:
+            raise ModelError(f"{path}: the dense {f[src].shape[0]}x{f[src].shape[1]} matrix "
+                             f"{src} is above the limit of {MAX_DENSE_ROWS} rows; convert it "
+                             "to the sparse native layout")
         matrix = np.asarray(f[src], dtype=float)
         lin_data = (np.asarray(f[found["linear"]], dtype=float)
                     if "linear" in found else None)
@@ -353,32 +496,25 @@ def model_from_h5(path: str, forced_type: str | None = None) -> Model:
             notes.append(f"converted foreign HDF5 ({src}, interpreted as {kind})")
 
     n = matrix.shape[0]
-    linear = {}
+    biases = np.zeros(n)
     if lin_data is not None:
-        if len(lin_data) != n:
+        if lin_data.shape != (n,):
             raise ModelError(f"linear dataset {found['linear']} has length "
                              f"{len(lin_data)} but the matrix is {n}x{n}")
-        linear = {i: float(v) for i, v in enumerate(lin_data) if v}
+        biases += lin_data
 
-    quadratic = {}
-    for i, j in zip(*np.nonzero(matrix)):
-        i, j = int(i), int(j)
-        if i == j:
-            if kind == "ising":
-                raise ModelError(f"nonzero diagonal at ({i},{i}) in an Ising matrix; "
-                                 "self-couplings belong in the linear dataset")
-            linear[i] = linear.get(i, 0.0) + float(matrix[i, i])
-            continue
-        key = (min(i, j), max(i, j))
-        if kind == "qubo":
-            quadratic[key] = quadratic.get(key, 0.0) + float(matrix[i, j])
-        else:
-            prev = quadratic.get(key)
-            if prev is not None and not np.isclose(prev, matrix[i, j]):
-                raise ModelError(f"asymmetric Ising matrix at ({i},{j}): "
-                                 f"{prev} vs {matrix[i, j]}")
-            quadratic[key] = float(matrix[i, j])
-    return Model(kind=kind, linear=linear, quadratic=quadratic, n=n, notes=notes)
+    i, j = np.nonzero(matrix)
+    v = matrix[i, j]
+    diag = i == j
+    if diag.any():
+        if kind == "ising":
+            k = int(i[diag][0])
+            raise ModelError(f"nonzero diagonal at ({k},{k}) in an Ising matrix; "
+                             "self-couplings belong in the linear dataset")
+        biases[i[diag]] += v[diag]
+    rows, cols, values = _couplings(i[~diag], j[~diag], v[~diag],
+                                    combine="sum" if kind == "qubo" else "same")
+    return Model(kind=kind, biases=biases, rows=rows, cols=cols, values=values, notes=notes)
 
 
 def describe(model: Model) -> dict[str, Any]:

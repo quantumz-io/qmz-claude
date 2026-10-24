@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -81,8 +82,10 @@ class TestSpec(unittest.TestCase):
                      {"type": "ising", "quadratic": [[0, 10**12, 1.0]]}):
             with self.subTest(spec=spec), self.assertRaisesRegex(InlineLimitError, "variable index"):
                 model_from_spec(spec)
-        self.assertEqual(model_from_spec({"type": "qubo", "linear": {"1000000000000": 1.0}},
-                                         inline=False).n, 10**12 + 1)
+        with self.assertRaisesRegex(ModelError, "above the limit of"):
+            model_from_spec({"type": "qubo", "linear": {"1000000000000": 1.0}}, inline=False)
+        self.assertEqual(model_from_spec({"type": "qubo", "linear": {"200000": 1.0}},
+                                         inline=False).n, 200_001)
 
     def test_inline_limit_is_checked_before_building(self):
         for spec, message in (
@@ -109,6 +112,47 @@ class TestSpec(unittest.TestCase):
     def test_bqm_has_every_index(self):
         m = model_from_spec({"type": "ising", "quadratic": [[0, 3, -1.0]]})
         self.assertEqual(sorted(m.bqm().variables), [0, 1, 2, 3])
+
+    def test_only_terms_define_variables(self):
+        m = model_from_spec({"type": "ising", "linear": [0.0, 0.0, 1.0, 0.0]})
+        self.assertEqual((m.n, m.linear), (3, {2: 1.0}))
+        self.assertEqual(model_from_spec({"type": "ising", "linear": {"3": 0.0}}).n, 4)
+        with self.assertRaisesRegex(ModelError, "no variables"):
+            model_from_spec({"type": "ising", "linear": [0.0]})
+        with self.assertRaisesRegex(ModelError, "names a variable twice"):
+            model_from_spec({"type": "ising", "linear": {"1": 1.0, "01": 2.0}})
+
+    def test_nested_ragged_and_huge_entries_are_refused(self):
+        for entry in ([[0, 1], [1, 2], [1.0, 2.0]], [[0], [1], [1.0]], [0, 1, [1.0]],
+                      [0, 2**63, 1], [0, 9.3e18, 1.0], [0, 1e300, 1.0]):
+            with self.subTest(entry=entry), \
+                    self.assertRaisesRegex(ModelError, r"is not \[i, j, value\]"):
+                model_from_spec({"type": "qubo", "quadratic": [entry]})
+        for entry in ([0, 2**70, 1.0], ["0", str(2**70), 1.0]):
+            with self.subTest(entry=entry), self.assertRaisesRegex(ModelError, "above the limit"):
+                model_from_spec({"type": "qubo", "quadratic": [entry]})
+        with self.assertRaisesRegex(ModelError, '"linear" must be'):
+            model_from_spec({"type": "qubo", "linear": {str(2**70): 1.0}})
+
+    def test_numeral_strings_and_matrix_rows_are_checked(self):
+        m = model_from_spec({"type": "qubo", "quadratic": [["1", "0", 2.0]]})
+        self.assertEqual(m.quadratic, {(0, 1): 2.0})
+        for matrix in ([[1.0, 2.0], [3.0]], [[1.0, 2.0, 3.0]], [["a", 2.0], [3.0, 4.0]]):
+            with self.subTest(matrix=matrix), \
+                    self.assertRaisesRegex(ModelError, "must be a square matrix of numbers"):
+                model_from_spec({"type": "qubo", "matrix": matrix})
+
+    def test_a_million_variables_load_as_arrays(self):
+        import numpy as np
+
+        n = 1_000_000
+        spec = {"type": "ising", "quadratic": np.c_[np.arange(n - 1), np.arange(1, n),
+                                                    -np.ones(n - 1)].tolist()}
+        m = model_from_spec(spec, inline=False)
+        self.assertEqual((m.n, m.num_interactions), (n, n - 1))
+        bqm = m.bqm()
+        self.assertEqual((bqm.num_variables, bqm.num_interactions), (n, n - 1))
+        self.assertEqual(bqm.energy((np.ones(n, dtype=np.int8), np.arange(n))), -(n - 1))
 
 
 class TestLoadModel(unittest.TestCase):
@@ -175,6 +219,106 @@ class TestHdf5(unittest.TestCase):
         self.assertEqual(m.linear, {0: 0.5, 2: -1.0})
         self.assertEqual(m.labels, ["a", "b", "c"])
 
+    def test_native_couplings_stored_once_in_either_order(self):
+        import numpy as np
+
+        def build(f):
+            g = f.create_group("Ising")
+            g["biases"] = np.zeros(3)
+            c = g.create_group("couplings")
+            c["I"] = np.array([2, 2])
+            c["J"] = np.array([1, 3])
+            c["V"] = np.array([-1.0, 2.0])
+
+        m = load_model(path=self._write("once.h5", build))
+        self.assertEqual(m.quadratic, {(0, 1): -1.0, (1, 2): 2.0})
+
+    def test_native_couplings_with_two_values_are_refused(self):
+        import numpy as np
+
+        def build(f):
+            g = f.create_group("Ising")
+            g["biases"] = np.zeros(2)
+            c = g.create_group("couplings")
+            c["I"] = np.array([1, 2])
+            c["J"] = np.array([2, 1])
+            c["V"] = np.array([1.0, 2.0])
+
+        with self.assertRaisesRegex(ModelError, r"coupling \(0,1\) is given with two values"):
+            load_model(path=self._write("twice.h5", build))
+
+    def test_native_shapes_labels_and_values_are_checked(self):
+        import numpy as np
+        from veloxq_mcp import models
+
+        def native(biases, I, J, V, labels=None, dense=None):
+            def build(f):
+                g = f.create_group("Ising")
+                g["biases"] = np.asarray(biases, dtype=float)
+                if dense is not None:
+                    g["couplings"] = np.asarray(dense, dtype=float)
+                else:
+                    c = g.create_group("couplings")
+                    c["I"], c["J"], c["V"] = np.asarray(I), np.asarray(J), np.asarray(V, dtype=float)
+                if labels is not None:
+                    g["labels"] = np.array(labels)
+            return build
+
+        cases = [
+            (native([0, 0], [1, 2], [2], [1.0]), "vectors of one length"),
+            (native([[0, 0]], [1], [2], [1.0]), "biases must be a vector"),
+            (native([0, 0], [1], [2], [float("nan")]), "finite"),
+            (native([0, 0, 0], [1], [2], [1.0], labels=[b"a"]), "1 labels for 3 variables"),
+            (native([0, 0], None, None, None, dense=np.zeros((3, 3))), "must be 2x2"),
+        ]
+        for k, (build, message) in enumerate(cases):
+            with self.subTest(message=message), self.assertRaisesRegex(ModelError, message):
+                load_model(path=self._write(f"bad{k}.h5", build))
+        with mock.patch.object(models, "MAX_VARIABLES", 2), \
+                self.assertRaisesRegex(ModelError, "above the limit"):
+            load_model(path=self._write("wide.h5", native([0, 0, 0], [1], [2], [1.0])))
+        with mock.patch.object(models, "MAX_DENSE_ROWS", 1), \
+                self.assertRaisesRegex(ModelError, "store the couplings as I, J, V"):
+            load_model(path=self._write("dense.h5", native([0, 0], None, None, None,
+                                                           dense=np.zeros((2, 2)))))
+
+    def test_foreign_dense_matrix_has_a_row_limit(self):
+        import numpy as np
+        from veloxq_mcp import models
+
+        def build(f):
+            f["J"] = np.zeros((3, 3))
+
+        with mock.patch.object(models, "MAX_DENSE_ROWS", 2), \
+                self.assertRaisesRegex(ModelError, "above the limit of 2 rows"):
+            load_model(path=self._write("big.h5", build))
+
+    def test_native_diagonal_and_out_of_range_couplings(self):
+        import numpy as np
+
+        def build(f):
+            g = f.create_group("Ising")
+            g["biases"] = np.zeros(2)
+            c = g.create_group("couplings")
+            c["I"] = np.array([1, 1, 2])
+            c["J"] = np.array([1, 2, 1])
+            c["V"] = np.array([5.0, 1.0, 1.0])
+
+        m = load_model(path=self._write("diag.h5", build))
+        self.assertEqual(m.quadratic, {(0, 1): 1.0})
+        self.assertIn("1 diagonal couplings ignored as constants", m.notes)
+
+        def build_out(f):
+            g = f.create_group("Ising")
+            g["biases"] = np.zeros(2)
+            c = g.create_group("couplings")
+            c["I"] = np.array([1])
+            c["J"] = np.array([3])
+            c["V"] = np.array([1.0])
+
+        with self.assertRaisesRegex(ModelError, "outside 1..2"):
+            load_model(path=self._write("out.h5", build_out))
+
     def test_named_datasets(self):
         import numpy as np
 
@@ -236,7 +380,7 @@ class TestHdf5(unittest.TestCase):
         def build(f):
             f["J"] = np.array([[0.0, 1.0], [2.0, 0.0]])
 
-        with self.assertRaisesRegex(ModelError, "asymmetric"):
+        with self.assertRaisesRegex(ModelError, "two values"):
             load_model(path=self._write("asym.h5", build))
 
     def test_bad_h5_type(self):

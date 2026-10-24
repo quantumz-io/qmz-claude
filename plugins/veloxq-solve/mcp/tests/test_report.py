@@ -52,12 +52,24 @@ def figures(html):
     return re.findall(r'<svg class="vq-fig" data-figure="(\w+)"', html)
 
 
+def legend_class(html, label):
+    """Color class of the first legend entry whose label is ``label (count)``."""
+    found = re.search(r'class="(vq-\w+)"/><text [^>]*>' + re.escape(label) + r' \(', html) \
+        or re.search(r'class="(vq-\w+)"/><text [^>]*>' + re.escape(label) + r'<', html)
+    return found and found.group(1)
+
+
+def strip_legend(html):
+    """The legend of the best-sample strip: its SVG up to the first cell."""
+    return html.split('data-figure="state"')[1].split('class="vq-m')[0]
+
+
 def ising_result(sample, objective=-2.0, **extra):
     r = {"type": "ising", "vartype": "SPIN", "num_variables": len(sample),
          "num_samples": 10, "best_objective": objective, "best_sample": sample,
          "num_samples_at_best": 7,
          "top": [{"sample": sample, "objective": objective}],
-         "solver": "veloxq", "job_id": "job-1", "platform_info": {"num_rep": "10"}}
+         "solver": "veloxq", "job_id": "job-1", "result_info": {"num_rep": "10"}}
     r.update(extra)
     return r
 
@@ -395,6 +407,68 @@ class TestPage(unittest.TestCase):
                        "<link", "<img", "<iframe", "<object"):
             self.assertNotIn(needle, rest)
 
+    STATS = {"usage_time": 37.972596, "pending_time": 18.912194, "running_time": 15.078,
+             "quota_solver_time": 15.078, "cost_solver_time": 0.0, "solver_cost": 0.55,
+             "solver_usage_scale": 1.0, "backend_cost_scale": 2.0,
+             "backend_usage_scale": 3.0, "total_cost": 0.0123, "total_quota_usage": 30156}
+
+    def run_details(self, **extra):
+        html = page(None, ising_result([1, -1], **extra))
+        return html.split("<h2>Run details</h2>")[1].split("<footer>")[0]
+
+    def test_run_details_split_into_a_job_and_a_usage_card(self):
+        details = self.run_details(
+            statistics=self.STATS, finished_at="2026-10-23T18:22:27.267882Z",
+            backend={"name": "veloxq_h100_2", "description": "GPU: 2"})
+        job, usage = details.split("<h3>Usage and cost</h3>")
+        self.assertIn("<h3>Job</h3>", job)
+        for row in ('<dt>Solver</dt><dd>veloxq</dd>',
+                    '<dt>Backend</dt><dd>veloxq_h100_2<span class="sub">GPU: 2</span></dd>',
+                    '<dt>Model</dt><dd>Ising<span class="sub">2 spin variables</span></dd>',
+                    '<dt>Samples</dt><dd>10<span class="sub">7 at the best value</span></dd>',
+                    '<dt>Finished</dt><dd>2026-10-23 18:22 UTC</dd>'):
+            self.assertIn(row, job)
+        for label, value, note in (
+                ("API time", "38 s", "18.9 s pending, 15.1 s running"),
+                ("Solver time", "15.1 s", "0 s billed"),
+                ("Quota used", "30,156 ms", None),
+                ("Cost", "$0.012", "at $0.55/s")):
+            self.assertIn(f'<div class="label">{label}</div><div class="value">{value}</div>'
+                          + (f'<div class="note">{note}</div>' if note else "</div>"), usage)
+        self.assertIn('<dt>Solver multiplier</dt><dd>×1<span class="sub">quota</span></dd>',
+                      usage)
+        self.assertIn('<dt>Backend multiplier</dt><dd>×2 cost, ×3 quota</dd>', usage)
+
+    def test_equal_backend_scales_read_as_one_multiplier(self):
+        details = self.run_details(statistics=dict(self.STATS, backend_usage_scale=2.0))
+        self.assertIn('<dt>Backend multiplier</dt><dd>×2<span class="sub">cost and quota'
+                      '</span></dd>', details)
+
+    def test_no_statistics_no_usage_card(self):
+        details = self.run_details()
+        self.assertIn("<h3>Job</h3>", details)
+        self.assertNotIn("Usage and cost", details)
+
+    def test_durations_and_money_read_naturally(self):
+        for seconds, text in ((0, "0 s"), (0.292, "292 ms"), (2.530341, "2.53 s"),
+                              (75.2, "1 min 15 s"), (3725, "1 h 2 min")):
+            self.assertEqual(report.duration(seconds), text)
+        for usd, text in ((0, "$0.00"), (0.0123, "$0.012"), (12.5, "$12.50"),
+                          (1234.5, "$1,234.50")):
+            self.assertEqual(report.dollars(usd), text)
+
+    def test_solver_metadata_is_a_closed_section_of_the_run_details(self):
+        details = self.run_details()
+        found = re.search(r'<details( open)? class="card meta"><summary>Solver metadata'
+                          r"</summary><dl>(.*?)</dl></details>", details)
+        self.assertIsNotNone(found)
+        self.assertIsNone(found.group(1))
+        self.assertEqual(found.group(2), "<dt>num_rep</dt><dd>10</dd>")
+        self.assertNotIn("Solver num_rep", details)
+
+    def test_no_solver_metadata_no_section(self):
+        self.assertNotIn("Solver metadata", self.run_details(result_info={}))
+
     def test_page_is_a_bare_document_with_an_early_title(self):
         html = self.full_page()
         self.assertTrue(html.startswith("<!doctype html>"))
@@ -634,18 +708,75 @@ class TestPage(unittest.TestCase):
         html = page(result=ising_result(
             [1, -1, 1], objective_distribution={"values": [-2.0, 0.0],
                                                 "counts": [7, 3]}))
-        self.assertIn("7 of 10 samples reached the best Ising energy of -2", html)
+        self.assertIn("7 of 10 samples reached the best Ising energy of -2 J", html)
         self.assertEqual(figures(html), ["samples", "state"])
 
     def test_single_valued_distribution_is_not_plotted(self):
         self.assertIsNone(report.distribution_figure(
             {"values": [-2.0], "counts": [10]}, "ising"))
 
-    def test_large_sample_omits_the_strip_and_says_so(self):
+    def test_large_sample_strip_is_coarse_grained_with_a_footnote(self):
         n = report.MAX_STRIP + 1
-        html = page(result=ising_result([1] * n))
-        self.assertEqual(figures(html), [])
-        self.assertIn(f"sets {n:,} of {n:,} variables to +1", html)
+        html = page(result=ising_result([1] * (n - 2) + [-1, -1]))
+        self.assertEqual(figures(html), ["state"])
+        self.assertIn("<h3>Best sample*</h3>", html)
+        self.assertIn(f"{n:,} variables in {n // 2 + 1:,} blocks of 2", html)
+        self.assertIn("s[4096..4096]: 0 of 1 are +1", html)
+        self.assertIn("s[4094..4095]: 1 of 2 are +1", html)
+        self.assertIn(f"<footer>* Simplified for {n:,} variables: the best-sample strip "
+                      "shows the share set to +1 per block of 2 variables.</footer>", html)
+        # Shares 0 to 1: all +1 -> solid, half -> light second color, all -1 -> solid second.
+        self.assertIn('class="vq-m vq-s1">', html)
+        self.assertIn('class="vq-m vq-s2" fill-opacity="0.15">', html)
+        self.assertNotIn('class="vq-m vq-s1" fill-opacity', html)
+        # Three shares need the gradient: one swatch strip from the −1 to the +1 color.
+        legend = strip_legend(html)
+        self.assertIn('class="vq-s2" fill-opacity', legend)
+        self.assertIn('class="vq-s1" fill-opacity', legend)
+        self.assertIn(">0%<", legend)
+        self.assertIn(">100% set to +1<", legend)
+        self.assertNotIn(" are ", legend)
+
+    def test_coarse_strip_scale_spans_the_block_shares(self):
+        n = report.MAX_STRIP + 1          # blocks of 2; the last one holds one variable
+        half = report.MAX_STRIP // 4
+        sample = [1, -1] * half + [1, 1] * (n // 2 - half) + [1]
+        html = page(result=ising_result(sample))
+        # Half-set blocks are the lowest share present, so they take the solid −1 color.
+        self.assertIn('class="vq-m vq-s2">', html)
+        self.assertNotIn("fill-opacity", html.split('data-figure="state"')[1])
+        # Two shares need no gradient: two plain swatches.
+        self.assertEqual(legend_class(html, "100% set to +1"), "vq-s1")
+        self.assertEqual(legend_class(html, "50% set to +1"), "vq-s2")
+        self.assertNotIn("fill-opacity", strip_legend(html))
+        self.assertIn("Every block is 50% or 100% set to +1.", html)
+
+    def test_coarse_strip_of_pure_blocks_uses_the_value_names(self):
+        n = report.MAX_STRIP + 1
+        html = page(result=ising_result([1, 1] * (n // 4) + [-1] * (n - 2 * (n // 4))))
+        self.assertEqual(legend_class(html, "+1"), "vq-s1")
+        self.assertEqual(legend_class(html, "−1"), "vq-s2")
+        self.assertNotIn("%", strip_legend(html))
+        self.assertIn("Every block holds a single value.", html)
+
+    def test_coarse_strip_of_one_value_is_solid(self):
+        html = page(result=ising_result([1] * (report.MAX_STRIP + 1)))
+        cells = html.split('data-figure="state"')[1]
+        self.assertIn('class="vq-m vq-s1">', cells)
+        self.assertNotIn("vq-m vq-s2", cells)
+        self.assertNotIn("fill-opacity", cells)
+        self.assertIn("Every block holds a single value.", html)
+
+    def test_qubo_strip_draws_zero_like_the_legend(self):
+        html = page(result=qubo_result([1, 0, 1], 0.0))
+        self.assertEqual(legend_class(html, "0"), "vq-s2")
+        self.assertIn('class="vq-m vq-s2">', html)
+        self.assertNotIn('vq-s2" fill-opacity', html)
+        self.assertIn("x[1] = 0", html)
+
+    def test_small_report_has_no_footnote(self):
+        html = page(result=ising_result([1, -1, 1]))
+        self.assertNotIn("*", html.split("<main>")[1])
 
     def test_result_without_distribution_still_renders(self):
         html = page(result=ising_result([1, -1]))
@@ -661,7 +792,10 @@ class TestModel(unittest.TestCase):
         view = {"title": "Max-cut", "checks": [],
                 "views": [graph_view(["a", "b", "a", "a"], edge_rule="cut")]}
         html = page(view, result, model)
-        self.assertIn("frustrated coupling (2)", html)
+        self.assertIn("coupling raising the objective (2)", html)
+        self.assertIn("coupling lowering the objective or inactive (2)", html)
+        self.assertIn("+1 (3)", html)
+        self.assertIn("−1 (1)", html)
         self.assertEqual(figures(html), ["graph", "samples", "model", "state"])
 
     def test_figures_have_no_standalone_image_form(self):
@@ -669,28 +803,127 @@ class TestModel(unittest.TestCase):
         self.assertNotIn("xmlns", page({"title": "t", "checks": [], "views": [
             {"type": "bars", "items": [{"label": "a", "value": 1}]}]}))
 
-    def test_qubo_model_marks_active_couplings(self):
-        model = model_from_spec({"type": "qubo", "quadratic": [[0, 1, 2.0], [1, 2, 2.0]],
+    def test_model_graph_highlights_softly(self):
+        model = model_from_spec({"type": "ising", "quadratic": [[0, 1, 1.0], [1, 2, -1.0]]})
+        view = {"title": "t", "checks": [], "views": [graph_view(["a", "b", "a", "a"],
+                                                                 edge_rule="cut")]}
+        html = page(view, ising_result([1, 1, 1], 0.0), model)
+        solution, rest = html.split("<h2>Model</h2>")
+        self.assertIn('class="vq-m vq-eh"', solution)        # the cut edges keep the ink
+        self.assertIn('class="vq-m vq-em"', rest)             # the raising coupling is mid-tone
+        self.assertNotIn('class="vq-m vq-eh"', rest)
+
+    def test_ground_state_legend_counts_zero_raising_couplings(self):
+        model = model_from_spec({"type": "ising", "quadratic": [[0, 1, -1.0], [1, 2, -1.0]]})
+        html = page(result=ising_result([1, 1, 1], -2.0), model=model)
+        self.assertIn("coupling raising the objective (0)", html)
+        self.assertIn("coupling lowering the objective or inactive (2)", html)
+        self.assertIn("−1 (0)", html)
+        self.assertIn("0 – 1 · weight -1 J · coupling lowering the objective or inactive", html)
+
+    def test_qubo_model_uses_the_same_style_as_ising(self):
+        model = model_from_spec({"type": "qubo", "quadratic": [[0, 1, 2.0], [1, 2, -2.0]],
                                  "linear": [-1, -1, -1]})
-        html = page(result=qubo_result([1, 1, 0], 0.0), model=model)
-        self.assertIn("active coupling (both ends 1) (1)", html)
-        self.assertIn("x = 0 (1)", html)
+        html = page(result=qubo_result([1, 1, 1], -1.0), model=model)
+        # Both values are colored groups; only a positive term between two 1s raises.
+        self.assertIn("1 (3)", html)
+        self.assertIn("0 (0)", html)
+        self.assertIn("coupling raising the objective (1)", html)
+        self.assertIn("coupling lowering the objective or inactive (1)", html)
+        self.assertIn("0 – 1 · weight 2 J · coupling raising the objective", html)
+        self.assertIn("1 – 2 · weight -2 J · coupling lowering the objective or inactive", html)
+        for needle in ("frustrated", "active coupling", "x = 0", "spin +1"):
+            self.assertNotIn(needle, html)
 
     def test_qubo_diagonal_is_linear_not_a_coupling(self):
         model = model_from_spec({"type": "qubo", "matrix": [[-1, 2], [0, -1]]})
         html = page(result=qubo_result([1, 0], -1.0), model=model)
         self.assertIn('<div class="label">Couplings</div><div class="value">1</div>',
                       html)
-        self.assertEqual(html.count("<td>inactive coupling</td>"), 1)
-        self.assertNotIn("<td>active coupling", html)
+        self.assertEqual(html.count("<td>coupling lowering the objective or inactive</td>"), 1)
+        self.assertNotIn("<td>coupling raising", html)
 
-    def test_large_model_states_the_omission(self):
-        n = 301
+    def test_large_model_graph_is_coarse_grained(self):
+        n = 400
         model = model_from_spec({"type": "ising",
                                  "quadratic": [[i, i + 1, -1.0] for i in range(n - 1)]})
-        html = page(result=ising_result([1] * n, -300.0), model=model)
-        self.assertIn("drawn up to 300 variables", html)
-        self.assertNotIn("model", figures(html))
+        # Blocks of 10: a domain wall inside block 1 and one on the edge 19 | 20.
+        sample = [1] * 15 + [-1] * 5 + [1] * (n - 20)
+        html = page(result=ising_result(sample, -396.0), model=model)
+        self.assertEqual(figures(html), ["model", "state"])
+        self.assertIn("<h3>Model in its best state*</h3>", html)
+        self.assertIn("mostly +1 (39)", html)
+        self.assertIn("mixed (1)", html)
+        self.assertIn("block 1: s[10..19] · 5 of 10 are +1 · 9 couplings inside, 1 raising "
+                      "the objective", html)
+        self.assertIn("block 1 – block 2 · 1 couplings, 1 raising the objective", html)
+        self.assertIn("blocks sharing a coupling that raises the objective (1)", html)
+        self.assertIn("blocks sharing only couplings that lower it or are inactive (38)", html)
+        self.assertIn("mostly −1 (0)", html)
+        self.assertIn("* Simplified for 400 variables: the coupling graph groups the "
+                      "variables into 40 blocks of 10.", html)
+
+    def test_coarse_graph_colors_values_like_the_fine_one(self):
+        n = 400
+        for kind, one, zero, on, off in (("ising", "+1", "−1", 1, -1), ("qubo", "1", "0", 1, 0)):
+            with self.subTest(kind=kind):
+                model = model_from_spec({"type": kind, "quadratic": [[i, i + 1, -1.0]
+                                                                     for i in range(n - 1)]})
+                fine = model_from_spec({"type": kind, "quadratic": [[0, 1, -1.0]]})
+                result = ising_result if kind == "ising" else qubo_result
+                coarse = page(result=result([on] * 15 + [off] * 5 + [off] * (n - 20), 0.0),
+                              model=model).split("<h3>Best sample")[0]
+                small = page(result=result([on, off], 0.0), model=fine).split("<h3>Best sample")[0]
+                self.assertEqual(legend_class(small, one), "vq-s1")
+                self.assertEqual(legend_class(small, zero), "vq-s2")
+                self.assertEqual(legend_class(coarse, f"mostly {one}"), "vq-s1")
+                self.assertEqual(legend_class(coarse, f"mostly {zero}"), "vq-s2")
+                self.assertEqual(legend_class(coarse, "mixed"), "vq-n0")
+
+    def test_dense_block_graph_falls_back_to_fewer_blocks(self):
+        import numpy as np
+
+        n = 400
+        r = np.random.default_rng(0)
+        i, j = r.integers(0, n, 6000), r.integers(0, n, 6000)
+        keep = i != j
+        key = np.unique(np.minimum(i, j)[keep] * n + np.maximum(i, j)[keep])
+        model = model_from_spec({"type": "ising", "quadratic": [[int(k // n), int(k % n), 1.0]
+                                                               for k in key]})
+        html = page(result=ising_result([1] * n, 0.0), model=model)
+        # 40 blocks would share couplings on nearly all 780 pairs; 12 blocks are drawn.
+        self.assertIn("groups the variables into 12 blocks of 34", html)
+        self.assertIn("mostly +1 (12)", html)
+
+    def test_dense_qubo_graph_is_coarse_grained(self):
+        n = 90      # 4,005 couplings, above the edge limit at a small variable count
+        model = model_from_spec({"type": "qubo", "quadratic": [[i, j, 1.0] for i in range(n)
+                                                              for j in range(i + 1, n)]})
+        html = page(result=qubo_result([0] * 6 + [1] * 4 + [0] * (n - 10), 6.0), model=model)
+        self.assertEqual(figures(html), ["model", "state"])
+        # The complete graph connects every pair of blocks, so 12 blocks of 8 are drawn.
+        self.assertIn("block 0: x[0..7] · 2 of 8 are 1 · 28 couplings inside, 1 raising the "
+                      "objective", html)
+        self.assertIn("block 0 – block 1 · 64 couplings, 4 raising the objective", html)
+        self.assertIn("blocks sharing a coupling that raises the objective (1)", html)
+        self.assertIn("blocks sharing only couplings that lower it or are inactive (65)", html)
+        self.assertIn("groups the variables into 12 blocks of 8", html)
+
+    def test_a_million_variable_model_reports_its_stats(self):
+        import numpy as np
+        from veloxq_mcp.models import Model
+
+        n = 1_000_000
+        model = Model("ising", np.zeros(n), np.arange(n - 1), np.arange(1, n), -np.ones(n - 1))
+        html = page(result=ising_result([1] * n, -float(n - 1)), model=model)
+        self.assertIn('<div class="label">Variables</div><div class="value">1,000,000</div>',
+                      html)
+        self.assertIn('<div class="label">Couplings</div><div class="value">999,999</div>',
+                      html)
+        self.assertIn("Coefficient range</div><div class=\"value\">1 to 1 J</div>", html)
+        self.assertEqual(figures(html), ["model", "state"])
+        self.assertIn("blocks of 25,000", html)
+        self.assertIn("per block of 245 variables", html)
 
 
 class TestApp(unittest.TestCase):
@@ -859,6 +1092,78 @@ class TestObjectiveDistribution(unittest.TestCase):
             fig = report.distribution_figure(
                 objective_distribution(values), "qubo")
             self.assertIn("QUBO objective", fig.body)
+
+
+class TestUnits(unittest.TestCase):
+    def test_energies_carry_the_coupling_unit(self):
+        html = page(result=ising_result([1, -1, 1], objective_distribution={
+            "values": [-2.0, 0.0], "counts": [7, 3]}))
+        self.assertIn('<div class="label">Best Ising energy</div><div class="value">-2 J</div>',
+                      html)
+        self.assertIn("7 of 10 samples reached the best Ising energy of -2 J.", html)
+        self.assertIn("<dt>Best Ising energy</dt><dd>-2 J</dd>", html)
+        self.assertIn("Ising energy in J (lower is better)", html)
+        self.assertIn("<title>-2 J · 7 samples</title>", html)
+        self.assertIn("<th>Ising energy (J)</th>", html)
+        self.assertIn("<footer>Energies are in units of the coupling J: a coefficient of 1 "
+                      "in the submitted model is 1 J.</footer>", html)
+
+    def test_binned_distribution_names_carry_the_unit(self):
+        fig = report.distribution_figure(
+            {"bin_edges": [-3.0, -2.0, -1.0], "counts": [4, 5], "above": 1}, "qubo")
+        self.assertIn("<title>-3 to -2 J · 4 samples</title>", fig.body)
+        self.assertIn("1 samples above -1 J are not drawn", fig.caption)
+        self.assertIn("QUBO objective in J (lower is better)", fig.body)
+        self.assertEqual(fig.tables[0][1], ["QUBO objective (J)", "samples"])
+
+    @needs_numpy
+    def test_model_coefficients_carry_the_unit(self):
+        model = model_from_spec({"type": "ising",
+                                 "quadratic": [[0, 1, -1.0], [1, 2, 2.0]]})
+        html = page(result=ising_result([1, 1, -1], -3.0), model=model)
+        self.assertIn('Coefficient range</div><div class="value">1 to 2 J</div>', html)
+        self.assertIn("0 – 1 · weight -1 J · ", html)
+        self.assertIn("<th>weight (J)</th>", html)
+
+    def test_quota_is_in_milliseconds(self):
+        html = page(result=ising_result([1, -1], statistics={"total_quota_usage": 30156}))
+        self.assertIn('<div class="label">Quota used</div><div class="value">30,156 ms</div>',
+                      html)
+
+    def test_route_distances_carry_the_view_unit(self):
+        fig = report.view_route({"type": "route", "points": [0, 1, 2], "unit": "km",
+                                 "routes": [{"order": [0, 2, 1]}],
+                                 "distances": [[0, 1, 2], [1, 0, 4], [2, 4, 0]]}, "v")
+        self.assertIn("route (length 7 km)", fig.body)
+        self.assertIn("step 1: 0 → 2 · 2 km", fig.body)
+        self.assertIn(">2 km<", fig.body)
+        self.assertEqual(fig.tables[0][1], ["route", "step", "from", "to", "distance (km)"])
+
+    @needs_numpy
+    def test_graph_weights_carry_the_view_unit(self):
+        fig = report.view_graph(graph_view(["a", "b", "a", "a"], unit="kg",
+                                           edges=[[0, 1, 2.5], [1, 2, 1], [2, 3, 1]]), "v")
+        self.assertIn("0 – 1 · weight 2.5 kg", fig.body)
+        self.assertIn(">2.5 kg<", fig.body)
+        self.assertEqual(fig.tables[1][1], ["from", "to", "weight (kg)", "state"])
+
+    def test_lane_tables_name_the_unit(self):
+        bins = report.view_bins({"type": "bins", "unit": "kg", "size_label": "weight",
+                                 "bins": [{"label": "b", "items": [
+                                     {"label": "i", "size": 3}]}]}, "v")
+        self.assertEqual(bins.tables[0][1], ["bin", "item", "weight (kg)", "value"])
+        sched = report.view_schedule({"type": "schedule", "unit": "h", "rows": [
+            {"label": "m", "tasks": [{"label": "j", "start": 0, "end": 2}]}]}, "v")
+        self.assertEqual(sched.tables[0][1][:4], ["row", "task", "start (h)", "end (h)"])
+        bars = report.view_bars({"type": "bars", "unit": "%",
+                                 "items": [{"label": "a", "value": 1}]}, "v")
+        self.assertEqual(bars.tables[0][1], ["item", "value (%)"])
+
+    def test_summary_tile_carries_its_unit(self):
+        html = page({"title": "t", "checks": [],
+                     "summary": [{"label": "Tour length", "value": 42.5, "unit": "km"}]})
+        self.assertIn('<div class="label">Tour length</div><div class="value">42.5 km</div>',
+                      html)
 
 
 if __name__ == "__main__":

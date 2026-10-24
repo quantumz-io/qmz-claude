@@ -41,7 +41,7 @@ from veloxq_sdk.config import VeloxQAPIConfig
 DEFAULT_SCOPES: tuple[str, ...] = (
     "user:read", "jobs:read", "jobs:write", "files:read", "files:write",
 )
-"""Scopes the server needs: account reads, jobs, files, solver timeouts."""
+"""Scopes the server needs: account reads, jobs, files."""
 
 REFRESH_MARGIN = 120.0
 """Seconds before expiry at which an access token is refreshed."""

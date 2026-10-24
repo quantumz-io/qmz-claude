@@ -13,7 +13,8 @@ SKILL.md step 4 says which figure suits which problem.
 {
   "title": "Max-cut on an 8-node graph",
   "subtitle": "One sentence restating the problem.",
-  "summary": [{"label": "Cut size", "value": "10 of 12 edges", "note": "optional"}],
+  "summary": [{"label": "Cut size", "value": "10 of 12 edges", "note": "optional"},
+              {"label": "Tour length", "value": 42.5, "unit": "km"}],
   "checks":  [{"label": "Every node has exactly one color", "ok": true,
                "detail": "6 of 6 nodes"}],
   "notes":   ["Penalty weight P = 26, above the largest item value 25."],
@@ -23,7 +24,8 @@ SKILL.md step 4 says which figure suits which problem.
 
 - `title` and `checks` are required. Everything else is optional.
 - `summary` is a list of objects holding the headline numbers in the user's
-  terms (cut size, total value, tour length). Put the answer first. Raw
+  terms (cut size, total value, tour length). Put the answer first. Give a
+  measured value its `unit`, which the tile prints after the value. Raw
   energies are shown elsewhere in the report and do not belong here.
 - `checks` is a list with one object per hard constraint, with `ok` computed
   from the decoded sample. The header shows "Feasible" only when every check
@@ -41,7 +43,9 @@ hand.
 
 ## 2. Figure types
 
-Every figure accepts `title` and `caption`.
+Every figure accepts `title` and `caption`. The figures that draw measured
+values (`graph` weights, `route` distances, `bins`, `schedule`, `bars`) take
+an optional `unit`, printed after each value and in the data table headers.
 
 ### graph
 
@@ -58,6 +62,7 @@ Every figure accepts `title` and `caption`.
   on every node to fix the positions. Otherwise the layout is computed.
 - `edges`: `[u, v]` or `[u, v, weight]`, each pair once. Use the object form
   to set a `status` (`plain`, `highlight`, `violated`) on one edge.
+- `unit`: optional unit of the edge weights.
 - `edge_rule` sets the status of the edges that do not give one:
   - `"cut"`: an edge between two different groups is highlighted.
   - `"conflict"`: an edge whose two ends share a group is violated. Ungrouped
@@ -76,7 +81,7 @@ Every figure accepts `title` and `caption`.
             {"id": 1, "x": 4, "y": 0},
             {"id": 2, "x": 4, "y": 3}],
  "routes": [{"label": "tour", "order": [0, 2, 1], "closed": true}],
- "distances": [[0, 4, 5], [4, 0, 3], [5, 3, 0]]}
+ "distances": [[0, 4, 5], [4, 0, 3], [5, 3, 0]], "unit": "km"}
 ```
 
 - `points`: ids, or objects with `id` and optional `label`, `x`, `y`. With
@@ -86,6 +91,7 @@ Every figure accepts `title` and `caption`.
 - `distances`: optional square matrix in `points` order. It labels each leg
   and the route length. Without coordinates it also places the points, and
   the caption says the drawn lengths are approximate.
+- `unit`: optional unit of the distances.
 
 ### bins
 
@@ -169,13 +175,27 @@ or cross and marks failed rows.
 | the whole page | 10 MB; a grid near its cell limit with long row or column labels can reach it |
 
 Exceeding a limit makes the tool refuse the view with a message. For an instance above the
-limits show an aggregate instead: group sizes as `bars`, a downsampled
-`grid`, the worst rows in a `table`.
+limits keep the figure type the small instance would get and aggregate its
+elements, so reports of one problem look alike at every size. A `graph`
+becomes blocks of consecutive nodes when a block has a dominant group (a
+partition, a selection, spins): one node per block in its majority group, an
+edge between blocks that share an edge, and few enough blocks that the block
+graph is not complete. When every node needs its own group (a coloring), show
+instead the induced subgraph on the first few hundred nodes with their real
+groups and conflicts. A `grid` is downsampled, a `route` goes through the
+centroid of each block of consecutive stops, a `table` keeps the worst rows.
+Say in a note how the figure was reduced.
+
+The sections built from the job's samples and the model show energies and
+coefficients in units of the coupling J, so a coefficient of 1 in the
+submitted model is 1 J.
 
 The sections built from the job's samples and the model scale down by themselves.
-The coupling graph is drawn up to 300 variables and 3,000 couplings, and the
-best-sample strip up to 4,096 variables. Above that the report states the
-omission.
+The coupling graph is drawn variable by variable up to 300 variables and 3,000
+couplings, and the best-sample strip up to 4,096 variables. Above that both are
+drawn over consecutive index blocks (at most 40 for the graph, 4,096 for the
+strip), their titles carry an asterisk, and a footnote states the
+simplification.
 
 ## 4. Full example
 

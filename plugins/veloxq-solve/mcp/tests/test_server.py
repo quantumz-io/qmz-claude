@@ -49,6 +49,9 @@ def solver_json():
              "required": False, "autoTune": False, "type": "select", "min": None,
              "max": None, "values": [{"name": "Fast", "value": "fast"},
                                      {"name": "Slow", "value": "slow"}]},
+            {"name": "timeout", "text": "Timeout", "description": "seconds", "default": "21600",
+             "required": False, "autoTune": False, "type": "timeout", "min": None, "max": None,
+             "values": []},
         ],
     }
 
@@ -153,8 +156,14 @@ class TestHelpers(ServerCase):
             server.validate_parameters(solver, {"numRep": "64", "dt": 0.5, "mode": "slow",
                                                 }),
             {"numRep": 64, "dt": 0.5, "mode": "slow"})
+        # Omitted parameters take the listed defaults; dt has none.
+        self.assertEqual(server.validate_parameters(solver, {}),
+                         {"numRep": 128, "mode": "fast"})
+        self.assertEqual(server.validate_parameters(solver, {"numRep": 64}),
+                         {"numRep": 64, "mode": "fast"})
         cases = [
             ({"num_rep": 1}, "unknown parameters"),
+            ({"timeout": 60}, "unknown parameters"),
             ({"numRep": 0}, "must be >= 1.0"),
             ({"dt": 2}, "must be <= 1.0"),
             ({"dt": "x"}, "must be a float"),
@@ -176,10 +185,14 @@ class TestHelpers(ServerCase):
         request = httpx.Request("GET", "https://blob.test/x?sig=SECRET")
         response = httpx.Response(403, json={"message": "Signature expired"}, request=request)
         err = server._tool_error(httpx.HTTPStatusError("boom", request=request, response=response))
-        self.assertEqual(str(err), "VeloxQ refused the action (403: Signature expired). "
+        self.assertEqual(str(err), "VeloxQ refused the action (403: Signature expired).")
+        self.assertNotIn("SECRET", str(err))
+        response = httpx.Response(403, json={"message": "Missing scope jobs:write"},
+                                  request=request)
+        err = server._tool_error(httpx.HTTPStatusError("boom", request=request, response=response))
+        self.assertEqual(str(err), "VeloxQ refused the action (403: Missing scope jobs:write). "
                                    "The connection lacks a scope the action needs; "
                                    "`disconnect` and `connect` again to grant it.")
-        self.assertNotIn("SECRET", str(err))
         response = httpx.Response(429, json={"message": "queue_full"},
                                   headers={"Retry-After": "12"}, request=request)
         err = server._tool_error(httpx.HTTPStatusError("x", request=request, response=response))
@@ -222,6 +235,7 @@ class TestAccountTools(ServerCase):
         self.assertEqual([b["status"] for b in out["backends"]], ["online", "offline"])
         self.assertEqual(out["backends"][1]["cost_scale"], 2.0)
         self.assertEqual(out["parameters"][2]["values"], ["fast", "slow"])
+        self.assertNotIn("timeout", [p["name"] for p in out["parameters"]])
         self.assertNotIn("support_backend", out)
 
 
@@ -531,7 +545,7 @@ class TestJobTools(ServerCase):
         body = json.loads(self.api.calls("POST", "/jobs")[0].content)
         self.assertEqual(body, {"problemId": None, "solvers": [{
             "solverId": SOLVER_ID, "backendId": BACKEND_ID,
-            "files": [{"fileId": "file-9"}], "parameters": {"numRep": 32}}]})
+            "files": [{"fileId": "file-9"}], "parameters": {"numRep": 32, "mode": "fast"}}]})
         ledger = server.LEDGER_FILE.read_text()
         self.assertIn(" job-7 VeloxQ H100 x1 qubo n=2", ledger)
 
@@ -586,6 +600,7 @@ class TestJobTools(ServerCase):
         out = server.get_job("job-1")
         self.assertTrue(out["finished"])
         self.assertEqual(out["statistics"]["total_cost_usd"], 0.015)
+        self.assertEqual(out["statistics"]["quota_usage_ms"], 2)
         self.assertEqual(out["parameters"], {"numRep": 32})
         self.assertEqual(out["backend"], "H100 x1")
         self.assertEqual(out["timeline"][0]["name"], "created")
@@ -717,7 +732,11 @@ class TestGetResult(ServerCase):
 
         from veloxq_sdk.jobs import Job
 
-        self.api.add("GET", "/jobs/job-1", job_json(status=status, resultAvailable=True))
+        self.api.add("GET", "/jobs/job-1", job_json(
+            status=status, resultAvailable=True,
+            statistics={"usageTime": 2.5, "totalQuotaUsage": 584},
+            backend={"name": "gpu-1", "description": "GPU: 2", "costScale": 2.0},
+            finishedAt="2026-10-22T10:00:09Z"))
         result = dimod.SampleSet.from_samples((samples, variables), "SPIN", energy=energies)
         real = Job.result
         Job.result = property(lambda self: result)
@@ -732,13 +751,32 @@ class TestGetResult(ServerCase):
         self.assertEqual(out["best_objective"], -1.0)
         self.assertTrue(out["energy_check"]["checked"])
         self.assertEqual(out["job_id"], "job-1")
-        self.assertNotIn("platform_info", out)
+        self.assertNotIn("result_info", out)
+        self.assertNotIn("statistics", out)
         saved = json.loads(out_path.read_text())
         self.assertEqual(saved["best_sample"], [-1, 1])
-        self.assertIn("platform_info", saved)
+        self.assertIn("result_info", saved)
+        self.assertEqual(saved["statistics"], {"usage_time": 2.5, "total_quota_usage": 584})
+        self.assertEqual(saved["backend"], {"name": "gpu-1", "description": "GPU: 2"})
+        self.assertEqual(saved["finished_at"], "2026-10-22T10:00:09Z")
         with self.assertRaisesRegex(ToolError, "exists; pass overwrite"):
             server.get_result("job-1", spec=spec, output=str(out_path))
         server.get_result("job-1", spec=spec, output=str(out_path), overwrite=True)
+
+    def test_long_samples_stay_in_the_output_file(self):
+        n = server.INLINE_SAMPLE_VARIABLES + 1
+        self._completed([[1] * n, [-1] * n], [1.0, -1.0], list(range(n)))
+        out_path = Path(self.tmp.name) / "result.json"
+        out = server.get_result("job-1", spec={"type": "ising", "linear": [0.0] * (n - 1) + [1.0]},
+                                top=2, output=str(out_path))
+        self.assertNotIn("best_sample", out)
+        self.assertEqual(out["top"], [{"objective": -1.0}, {"objective": 1.0}])
+        self.assertIn(str(out_path), out["samples"])
+        saved = json.loads(out_path.read_text())
+        self.assertEqual(saved["best_sample"], [-1] * n)
+        self.assertEqual(len(saved["top"][1]["sample"]), n)
+        # Without an output file the samples stay inline.
+        self.assertEqual(server.get_result("job-1")["best_sample"], [-1] * n)
 
     def test_result_names_the_solver(self):
         self._completed([[1, -1]], [-1.0], [0, 1])

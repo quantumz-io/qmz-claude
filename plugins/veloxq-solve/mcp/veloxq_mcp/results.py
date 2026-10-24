@@ -80,21 +80,27 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
         try:
             if model.labels is not None:
                 label_to_idx = {lab: i for i, lab in enumerate(model.labels)}
-                order = [label_to_idx[str(v)] for v in result.variables]
+                order = np.fromiter((label_to_idx[str(v)] for v in result.variables),
+                                    dtype=np.int64, count=len(result.variables))
             else:
-                order = [int(v) for v in result.variables]
+                order = np.asarray(result.variables)
+                if order.dtype.kind == "U":
+                    # The platform labels the columns "0", "1", ...
+                    order = order.astype(np.int64)
+                elif order.dtype.kind not in "iu":
+                    raise ValueError
         except (KeyError, TypeError, ValueError) as err:
             raise ResultError(
                 f"the platform returned unexpected variables "
                 f"{list(result.variables)[:10]}") from err
-        if sorted(order) != list(range(n)):
-            raise ResultError(f"the platform returned variables {order[:10]}..., "
+        if not np.array_equal(np.sort(order), np.arange(n)):
+            raise ResultError(f"the platform returned variables {order[:10].tolist()}..., "
                               f"expected 0..{n - 1}")
-        samples = samples[:, np.argsort(np.asarray(order))]
+        samples = samples[:, np.argsort(order)]
         spins = samples if set(values) <= {-1, 1} else 2 * samples - 1
         bqm = model.bqm()
         spin_bqm = bqm.spin
-        recomputed_spin = spin_bqm.energies((spins, list(range(n))))
+        recomputed_spin = spin_bqm.energies((spins, np.arange(n)))
         diff = platform_energies - recomputed_spin
         spread = float(diff.max() - diff.min()) if diff.size else 0.0
         scale = max(1.0, float(np.abs(recomputed_spin).max()))
@@ -106,7 +112,7 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
                 f"non-constant amount (spread {spread:.6g}); not trusting this result")
         if kind == "qubo":
             reported = ((spins + 1) // 2).astype(int)
-            objective = bqm.energies((reported, list(range(n))))
+            objective = bqm.energies((reported, np.arange(n)))
             vartype = "BINARY"
         else:
             reported = spins.astype(int)
@@ -151,5 +157,5 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
         "objective_distribution": objective_distribution(objective),
         "energy_check": energy_check,
         "warnings": warnings,
-        "platform_info": {k: str(v) for k, v in dict(result.info).items()},
+        "result_info": {k: str(v) for k, v in dict(result.info).items()},
     }
