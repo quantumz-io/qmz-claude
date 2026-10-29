@@ -30,6 +30,7 @@ from urllib.parse import quote
 from .models import INTEGER_LABEL, Model
 
 W = 720          # figure width in SVG user units
+PAIR_W = 480     # width of a figure that shares its card with a table
 PAD = 16
 FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
@@ -431,8 +432,9 @@ def legend(entries) -> tuple:
 
 class Figure:
     def __init__(self, kind, title, caption, height, body, tables=(), violations=0,
-                 simplified=None):
+                 simplified=None, width=W):
         self.kind = kind
+        self.width = width
         self.violations = violations   # marks drawn as violated
         self.simplified = simplified   # how the figure was coarsened for the page footnote
         self.title = title
@@ -443,7 +445,7 @@ class Figure:
 
     def svg(self) -> str:
         return (f'<svg class="vq-fig" data-figure="{self.kind}" '
-                f'viewBox="0 0 {W} {self.height:.0f}" role="img" '
+                f'viewBox="0 0 {self.width} {self.height:.0f}" role="img" '
                 f'aria-label="{esc(self.title or self.kind)}">{self.body}</svg>')
 
 
@@ -1351,8 +1353,9 @@ VIEWS = {"graph": view_graph, "route": view_route, "bins": view_bins,
 
 # ------------------------------------------------------- result and problem
 
-def distribution_figure(dist: dict, kind: str):
-    """Sample counts per objective value, best value in the accent color."""
+def distribution_figure(dist: dict, kind: str, fig_w: float = W):
+    """Sample counts per objective value, best value in the accent color,
+    drawn ``fig_w`` user units wide."""
     where = "result.objective_distribution"
     take(dist, where, ["counts"], ["values", "bin_edges", "above"])
     counts = [count(c, f"{where}.counts") for c in items_of(dist["counts"], f"{where}.counts")]
@@ -1372,7 +1375,7 @@ def distribution_figure(dist: dict, kind: str):
              "the values or bins")
     if len(counts) < 2:
         return None
-    left, right, top, bottom = 56.0, W - PAD, 22.0, 200.0
+    left, right, top, bottom = 56.0, fig_w - PAD, 22.0, 200.0
     tk = ticks(0, max(counts), integer=True, target=4)
     ymax = tk[-1]
     band = (right - left) / len(counts)
@@ -1423,7 +1426,8 @@ def distribution_figure(dist: dict, kind: str):
     out.append(text(14, (top + bottom) / 2, "samples", "vq-tm", 11, "middle",
                     extra=f' transform="rotate(-90 14 {(top + bottom) / 2:.1f})"'))
     return Figure("samples", "Samples by objective value", caption, bottom + 48,
-                  "".join(out), [("Samples", [col_name(axis, J), "samples"], rows)])
+                  "".join(out), [("Samples", [col_name(axis, J), "samples"], rows)],
+                  width=fig_w)
 
 
 def model_figures(result: dict, model: Model) -> tuple:
@@ -1690,6 +1694,12 @@ padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--line)}
 details.meta{margin-top:0;padding:12px 18px}
 details.meta[open] summary{margin-bottom:10px}
 .scroll{overflow-x:auto}
+.pair{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:28px;
+align-items:start}
+.pair .vq-fig{min-width:400px}
+@media (max-width:760px){.pair{grid-template-columns:minmax(0,1fr)}}
+.top td:nth-child(3){font:12px ui-monospace,SFMono-Regular,Menlo,monospace;
+word-break:break-all;max-width:33ch}
 table{border-collapse:collapse;font-size:13px;margin:8px 0;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:5px 12px 5px 0;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--ink2);font-weight:600}
@@ -2025,23 +2035,25 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
                    f'the best {axis} of '
                    f'{esc(with_unit(result["best_objective"], ENERGY_UNIT))}.</p>']
         dist = result.get("objective_distribution")
-        fig = distribution_figure(dist, kind) if dist else None
-        if fig is not None:
-            quality.append(figure_card(fig))
-        elif dist:
+        compact = result["num_variables"] <= 64
+        # Narrower beside the state column, so its text keeps the page's size.
+        fig = distribution_figure(dist, kind, PAIR_W if compact else W) if dist else None
+        if fig is None and dist:
             quality.append('<p class="note">Every sample has the same objective '
                            "value, so there is no distribution to plot.</p>")
         top = result["top"]
-        compact = result["num_variables"] <= 64
         rows = [[k + 1, t["objective"]]
                 + (["".join("+" if x > 0 else "−" for x in t["sample"]) if kind == "ising"
                     else "".join(str(x) for x in t["sample"])] if compact else [])
                 for k, t in enumerate(top)]
-        quality.append('<section class="card"><h3>Best distinct samples</h3>'
-                       + html_table(["rank", col_name(axis, ENERGY_UNIT)]
-                                    + (["state"] if compact else []), rows,
-                                    limit=TOP_ROWS)
-                       + "</section>")
+        best = ('<div class="top"><h3>Best distinct samples</h3>'
+                + html_table(["rank", col_name(axis, ENERGY_UNIT)]
+                             + (["state"] if compact else []), rows, limit=TOP_ROWS)
+                + "</div>")
+        if fig is None:
+            quality.append(f'<section class="card">{best}</section>')
+        else:
+            quality.append(f'<section class="card pair">{best}{figure_body(fig)}</section>')
         sections.append("<h2>Sample quality</h2>" + "".join(quality))
 
         parts, figs = [], []

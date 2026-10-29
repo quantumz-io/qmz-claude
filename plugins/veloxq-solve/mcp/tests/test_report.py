@@ -718,6 +718,31 @@ class TestPage(unittest.TestCase):
         self.assertIn("7 of 10 samples reached the best Ising energy of -2 J", html)
         self.assertEqual(figures(html), ["samples", "state"])
 
+    def test_best_samples_sit_left_of_the_distribution_in_one_card(self):
+        html = page(result=ising_result([1, -1, 1], objective_distribution={
+            "values": [-2.0, 0.0], "counts": [7, 3]}))
+        quality = html.split("<h2>Sample quality</h2>")[1].split("<h2>")[0]
+        self.assertEqual(quality.count('<section class="card'), 1)
+        self.assertIn('<section class="card pair"><div class="top"><h3>Best distinct samples',
+                      quality)
+        self.assertLess(quality.index("Best distinct samples"),
+                        quality.index('data-figure="samples"'))
+
+    def test_distribution_beside_the_state_column_is_drawn_narrower(self):
+        dist = {"values": [-2.0, 0.0], "counts": [7, 3]}
+        narrow = page(result=ising_result([1, -1, 1], objective_distribution=dist))
+        self.assertIn(f'data-figure="samples" viewBox="0 0 {report.PAIR_W} ', narrow)
+        wide = page(result=ising_result([1, -1] * 40, objective_distribution=dist))
+        self.assertIn(f'data-figure="samples" viewBox="0 0 {report.W} ', wide)
+
+    def test_best_samples_keep_their_card_without_a_distribution(self):
+        html = page(result=ising_result([1, -1], objective_distribution={
+            "values": [-2.0], "counts": [10]}))
+        quality = html.split("<h2>Sample quality</h2>")[1].split("<h2>")[0]
+        self.assertIn('<section class="card"><div class="top"><h3>Best distinct samples',
+                      quality)
+        self.assertNotIn("pair", quality)
+
     def test_single_valued_distribution_is_not_plotted(self):
         self.assertIsNone(report.distribution_figure(
             {"values": [-2.0], "counts": [10]}, "ising"))
