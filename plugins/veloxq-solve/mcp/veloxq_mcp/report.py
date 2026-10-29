@@ -27,7 +27,7 @@ import sys
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from .models import Model
+from .models import INTEGER_LABEL, Model
 
 W = 720          # figure width in SVG user units
 PAD = 16
@@ -1452,7 +1452,8 @@ def model_figures(result: dict, model: Model) -> tuple:
                "each edge a coupling. A highlighted coupling raises the objective in "
                "this state.")
     fig = network_figure("model", "Model in its best state", caption,
-                         [str(i) for i in range(n)], groups, [one, zero], edges, COUPLING_NAMES,
+                         model.labels or [str(i) for i in range(n)], groups, [one, zero],
+                         edges, COUPLING_NAMES,
                          edge_legend=True, soft=True, unit=ENERGY_UNIT)
     return [fig], [], stats
 
@@ -1465,6 +1466,19 @@ COUPLING_NAMES = {"highlight": "coupling raising the objective",
 def value_names(kind: str) -> tuple:
     """The two values a variable takes, set first."""
     return ("+1", "−1") if kind == "ising" else ("1", "0")
+
+
+def variable_names(kind: str, labels) -> tuple:
+    """How the report names variable k and the block a..b, and the order the
+    variables are drawn in. ``labels`` are a model file's, or None."""
+    s = "s" if kind == "ising" else "x"
+    if labels is None:
+        return (lambda k: f"{s}[{k}]", lambda a, b: f"{s}[{a}..{b}]", "in index order")
+    if all(INTEGER_LABEL.fullmatch(x) for x in labels):
+        return (lambda k: f"{s}[{labels[k]}]", lambda a, b: f"{s}[{labels[a]}..{labels[b]}]",
+                "in label order")
+    return (lambda k: labels[k], lambda a, b: f"{labels[a]}..{labels[b]}",
+            "in the model file's order")
 
 
 def raising(model: Model, sample) -> "np.ndarray":
@@ -1509,13 +1523,13 @@ def coarse_model_figure(model: Model, sample) -> Figure:
     between_hot = np.bincount(inverse, weights=hot[~inner], minlength=len(pairs))
 
     one, zero = value_names(model.kind)
-    name = "s" if model.kind == "ising" else "x"
+    _, span, _ = variable_names(model.kind, model.labels)
     share = ones / sizes
     # Mixed blocks stay neutral so that each value keeps the color it has everywhere.
     groups = [f"mostly {one}" if f >= 2 / 3 else f"mostly {zero}" if f <= 1 / 3 else None
               for f in share]
     labels = [f"block {k}" for k in range(nb)]
-    node_tips = [f"block {k}: {name}[{k * size}..{k * size + int(sizes[k]) - 1}] · "
+    node_tips = [f"block {k}: {span(k * size, k * size + int(sizes[k]) - 1)} · "
                  f"{fmt(int(ones[k]))} of {fmt(int(sizes[k]))} are {one} · "
                  f"{fmt(int(within[k]))} couplings inside, {fmt(int(within_hot[k]))} "
                  "raising the objective" for k in range(nb)]
@@ -1549,12 +1563,12 @@ def strip_figure(result: dict):
     poles = sample if result["type"] == "ising" else [2 * x - 1 for x in sample]
     rows = [poles[k:k + ncol] + [None] * (ncol - len(poles[k:k + ncol]))
             for k in range(0, n, ncol)]
-    name = "s" if result["type"] == "ising" else "x"
-    body, height = draw_grid(rows, tip_of=lambda r, c, val: f"{name}[{r * ncol + c}] = "
+    name, _, order = variable_names(result["type"], result.get("labels"))
+    body, height = draw_grid(rows, tip_of=lambda r, c, val: f"{name(r * ncol + c)} = "
                                                             f"{sample[r * ncol + c]}",
                              cell_max=14, kind="spin", poles=value_names(result["type"]))
     return Figure("state", "Best sample",
-                  f"All {fmt(n)} variables in index order, left to right, top to bottom.",
+                  f"All {fmt(n)} variables {order}, left to right, top to bottom.",
                   height, body)
 
 
@@ -1577,13 +1591,13 @@ def coarse_strip_figure(result: dict) -> Figure:
     ncol = 128
     rows = [mean[k:k + ncol] + [None] * (ncol - len(mean[k:k + ncol]))
             for k in range(0, nb, ncol)]
-    name = "s" if result["type"] == "ising" else "x"
+    _, span, order = variable_names(result["type"], result.get("labels"))
     one, zero = value_names(result["type"])
     low, high = percents(lo, hi)
 
     def tip_of(r, c, val):
         k = r * ncol + c
-        return (f"{name}[{k * size}..{k * size + int(sizes[k]) - 1}]: "
+        return (f"{span(k * size, k * size + int(sizes[k]) - 1)}: "
                 f"{fmt(int(ones[k]))} of {fmt(int(sizes[k]))} are {one}")
 
     if len(np.unique(share)) > 2:
@@ -1602,7 +1616,7 @@ def coarse_strip_figure(result: dict) -> Figure:
         how = f"Every block is {low} or {high} set to {one}."
     body, height = draw_grid(rows, tip_of=tip_of, cell_max=14, kind="spin", **legend)
     return Figure("state", "Best sample",
-                  f"{fmt(n)} variables in {fmt(nb)} blocks of {fmt(size)}, in index order, "
+                  f"{fmt(n)} variables in {fmt(nb)} blocks of {fmt(size)}, {order}, "
                   f"left to right, top to bottom. {how}", height, body,
                   simplified=f"the best-sample strip shows the share set to {one} per "
                              f"block of {fmt(size)} variables")

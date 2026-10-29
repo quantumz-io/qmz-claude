@@ -990,6 +990,46 @@ class TestShare(unittest.TestCase):
         self.assertEqual(tables[0][1], [label, "1"])
 
 
+class TestVariableLabels(unittest.TestCase):
+    """Variables named by the labels of their model file, not by position."""
+
+    def test_strip_without_labels_counts_positions(self):
+        fig = report.strip_figure(ising_result([1, -1]))
+        self.assertIn("<title>s[1] = -1</title>", fig.body)
+        self.assertIn("in index order", fig.caption)
+
+    def test_strip_names_integer_labels(self):
+        fig = report.strip_figure(ising_result([1, -1], labels=["3", "10"]))
+        self.assertIn("<title>s[10] = -1</title>", fig.body)
+        self.assertIn("in label order", fig.caption)
+
+    def test_strip_names_other_labels(self):
+        fig = report.strip_figure(ising_result([1, -1], labels=["b", "a"]))
+        self.assertIn("<title>a = -1</title>", fig.body)
+        self.assertIn("in the model file's order", fig.caption)
+
+    def test_coarse_strip_names_the_block_ends(self):
+        n = report.MAX_STRIP + 1
+        labels = [f"v{k}" for k in range(n)]
+        fig = report.strip_figure(ising_result([1] * n, labels=labels))
+        self.assertIn("<title>v0..v1: 2 of 2 are +1</title>", fig.body)
+        self.assertIn("in the model file's order", fig.caption)
+
+    @needs_numpy
+    def test_model_figures_name_labeled_variables(self):
+        from veloxq_mcp.models import Model
+
+        model = Model("ising", [0.0, 0.0], [0], [1], [-1.0], labels=["b", "a"])
+        result = ising_result([1, 1], -1.0, labels=["b", "a"])
+        html = page(result=result, model=model)
+        self.assertIn("<title>a · +1</title>", html)
+        n = 400
+        model = Model("ising", [0.0] * n, list(range(n - 1)), list(range(1, n)),
+                      [-1.0] * (n - 1), labels=[f"v{k}" for k in range(n)])
+        html = page(result=ising_result([1] * n, -399.0, labels=model.labels), model=model)
+        self.assertIn("block 0: v0..v9 · 10 of 10 are +1", html)
+
+
 class TestApp(unittest.TestCase):
     """The MCP App page that shows a report body inside an MCP host."""
 
