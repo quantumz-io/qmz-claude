@@ -45,7 +45,7 @@ hand.
 
 Every figure accepts `title` and `caption`. The figures that draw measured
 values (`graph` weights, `route` distances, `bins`, `schedule`, `bars`) take
-an optional `unit`, printed after each value and in the data table headers.
+an optional `unit`, printed after each value and in the CSV column headers.
 
 ### graph
 
@@ -106,7 +106,7 @@ an optional `unit`, printed after each value and in the data table headers.
 One stacked bar per bin. `capacity` (top level, or per bin) draws a marker and
 flags a bin that exceeds it. `unassigned` adds a muted row for items left
 out, named by `unassigned_label`. `value` is optional and appears in the
-tooltip and the data table under `value_label`.
+tooltip and the CSV under `value_label`.
 
 ### schedule
 

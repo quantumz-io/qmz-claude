@@ -339,7 +339,9 @@ conversation: follow it with one sentence on what it shows. In Claude Code
 give a link:
 
 - If the user chose the claude.ai page: publish `report.html` unchanged with
-  the Artifact tool and give the link it returns. If publishing fails, or the
+  the Artifact tool, declaring `capabilities: {downloads: true}` so each
+  figure's Share menu can save its image and CSV, and give the link it
+  returns. If publishing fails, or the
   file is too large to read before publishing, say so and give the local
   link instead. Never write a URL that a tool did not return.
 - Otherwise link the path the tool returned, and repeat it as plain text for

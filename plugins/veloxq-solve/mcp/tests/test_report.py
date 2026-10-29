@@ -5,6 +5,7 @@ venv; those tests are skipped without it.
 """
 import glob
 import html
+import html as html_lib
 import importlib.util
 import json
 import os
@@ -50,6 +51,12 @@ def page(view=None, result=None, model=None):
 def figures(html):
     """Kinds of the figures drawn on a page, in page order."""
     return re.findall(r'<svg class="vq-fig" data-figure="(\w+)"', html)
+
+
+def share_tables(html):
+    """Per figure, the tables its Share menu offers as CSV, as rows of cell texts."""
+    return [[[[t["s"][k] for k in row] for row in t["r"]] for t in json.loads(html_lib.unescape(d))]
+            for d in re.findall(r'<details class="vq-share" data-csv="([^"]*)">', html)]
 
 
 def legend_class(html, label):
@@ -776,7 +783,7 @@ class TestPage(unittest.TestCase):
 
     def test_small_report_has_no_footnote(self):
         html = page(result=ising_result([1, -1, 1]))
-        self.assertNotIn("*", html.split("<main>")[1])
+        self.assertNotIn("*", html[html.index("<main>"):html.index("</main>")])
 
     def test_result_without_distribution_still_renders(self):
         html = page(result=ising_result([1, -1]))
@@ -840,8 +847,9 @@ class TestModel(unittest.TestCase):
         html = page(result=qubo_result([1, 0], -1.0), model=model)
         self.assertIn('<div class="label">Couplings</div><div class="value">1</div>',
                       html)
-        self.assertEqual(html.count("<td>coupling lowering the objective or inactive</td>"), 1)
-        self.assertNotIn("<td>coupling raising", html)
+        edges = share_tables(html)[figures(html).index("model")][1]
+        self.assertEqual([e[3] for e in edges[1:]],
+                         ["coupling lowering the objective or inactive"])
 
     def test_large_model_graph_is_coarse_grained(self):
         n = 400
@@ -926,6 +934,62 @@ class TestModel(unittest.TestCase):
         self.assertIn("per block of 245 variables", html)
 
 
+class TestShare(unittest.TestCase):
+    """The Share menu that replaces a figure's data table."""
+
+    def share(self, fig):
+        body = report.figure_body(fig)
+        items = re.findall(r'<button type="button" data-share="(\w+)" data-file="([^"]+)">'
+                           r"([^<]+)</button>", body)
+        return body, items, share_tables(body)[0]
+
+    def test_figure_offers_its_image_and_its_table_as_csv(self):
+        fig = report.view_bars({"type": "bars", "title": "Load per item", "unit": "kg",
+                                "items": [{"label": "a", "value": 1234.5},
+                                          {"label": "b", "value": 2}]}, "v")
+        body, items, tables = self.share(fig)
+        self.assertNotIn("<summary>Data</summary>", body)
+        self.assertNotIn("<table>", body)
+        self.assertEqual(items, [("png", "load-per-item.png", "Download image (PNG)"),
+                                 ("0", "load-per-item-values.csv", "Download data (CSV)")])
+        self.assertEqual(tables, [[["item", "value (kg)"], ["a", "1234.5"], ["b", "2"]]])
+
+    def test_each_table_gets_its_own_csv(self):
+        fig = report.Figure("graph", "", "", 10, "",
+                            [("Nodes", ["node"], [["a"]]), ("Edges", ["from", "to"], [])])
+        _, items, tables = self.share(fig)
+        self.assertEqual(items, [("png", "graph.png", "Download image (PNG)"),
+                                 ("0", "graph-nodes.csv", "Download nodes (CSV)"),
+                                 ("1", "graph-edges.csv", "Download edges (CSV)")])
+        self.assertEqual(tables, [[["node"], ["a"]], [["from", "to"]]])
+
+    def test_figure_without_a_table_offers_only_its_image(self):
+        _, items, tables = self.share(report.Figure("state", "Best sample", "", 10, ""))
+        self.assertEqual(items, [("png", "best-sample.png", "Download image (PNG)")])
+        self.assertEqual(tables, [])
+
+    def test_csv_holds_every_row_of_a_wide_grid(self):
+        cells = [[1234.5] * 50 for _ in range(400)]
+        _, _, tables = self.share(report.view_grid({"type": "grid", "cells": cells}, "v"))
+        self.assertEqual(len(tables[0]), 401)
+        self.assertEqual(tables[0][1], ["0"] + ["1234.5"] * 50)
+
+    def test_repeated_cell_text_is_stored_once(self):
+        label = "x" * report.MAX_TEXT
+        fig = report.view_bars({"type": "bars", "items": [{"label": label, "value": 1}] * 50},
+                               "v")
+        body, _, tables = self.share(fig)
+        self.assertEqual(body.count(label), 1)
+        self.assertEqual(tables[0][1:], [[label, "1"]] * 50)
+
+    def test_labels_cannot_leave_the_data_attribute(self):
+        label = '"><b>x'
+        fig = report.view_bars({"type": "bars", "items": [{"label": label, "value": 1}]}, "v")
+        body, _, tables = self.share(fig)
+        self.assertNotIn("<b>", body)
+        self.assertEqual(tables[0][1], [label, "1"])
+
+
 class TestApp(unittest.TestCase):
     """The MCP App page that shows a report body inside an MCP host."""
 
@@ -954,20 +1018,22 @@ def _browser():
     return next((b for b in found if b), None)
 
 
-# Plays the MCP host: answers ui/initialize with a dark theme, sends the tool
-# input and result once the view is initialized, then records what the view
-# drew and every message it sent.
+# Plays the MCP host: answers ui/initialize with a dark theme and CAPS as its
+# capabilities, sends the tool input and result once the view is initialized,
+# then records what the view drew and every message it sent. Downloads are
+# recorded and accepted.
 HOST = """<!doctype html><meta charset="utf-8">
 <iframe id="f" style="width:800px;height:300px" srcdoc="APP"></iframe>
 <script>
-var frame=document.getElementById('f'),sent=[],sizes=[],opened=[],prevented=null;
+var frame=document.getElementById('f'),sent=[],sizes=[],opened=[],prevented=null,
+  downloads=[];
 function reply(m){frame.contentWindow.postMessage(m,'*');}
 window.addEventListener('message',function(e){
   if(e.source!==frame.contentWindow)return;
   var m=e.data;sent.push(m.method||'response');
   if(m.method==='ui/initialize')reply({jsonrpc:'2.0',id:m.id,result:{
     protocolVersion:m.params.protocolVersion,hostInfo:{name:'test',version:'1'},
-    hostCapabilities:{},hostContext:{theme:'dark'}}});
+    hostCapabilities:CAPS,hostContext:{theme:'dark'}}});
   else if(m.method==='ui/notifications/initialized'){
     reply({jsonrpc:'2.0',method:'ui/notifications/tool-input',params:{arguments:{job_id:'job-1'}}});
     reply({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{
@@ -978,6 +1044,8 @@ window.addEventListener('message',function(e){
       prevented=!frame.contentDocument.querySelector('dd a').dispatchEvent(click);},300);
   }
   else if(m.method==='ui/open-link')opened.push(m.params.url);
+  else if(m.method==='ui/download-file'){downloads.push(m.params);
+    reply({jsonrpc:'2.0',id:m.id,result:{}});}
   else if(m.method==='ui/notifications/size-changed')sizes.push(m.params.height);
 });
 function seen(){
@@ -993,7 +1061,8 @@ function seen(){
 
 def run_in_browser(browser: str, page_path: Path, expression: str, settle: float) -> str:
     """Load a page in headless Chromium over the DevTools protocol and return
-    ``expression`` evaluated after ``settle`` seconds. DevTools, unlike
+    ``expression`` evaluated after ``settle`` seconds, awaited if it is a
+    promise. DevTools, unlike
     --dump-dom, lets the page render frames, so requestAnimationFrame and
     ResizeObserver run."""
     from websockets.sync.client import connect
@@ -1022,7 +1091,8 @@ def run_in_browser(browser: str, page_path: Path, expression: str, settle: float
                 send(1, "Page.navigate", {"url": page_path.as_uri()})
                 time.sleep(settle)
                 reply = send(2, "Runtime.evaluate", {"expression": expression,
-                                                     "returnByValue": True})
+                                                     "returnByValue": True,
+                                                     "awaitPromise": True})
                 return reply["result"]["result"]["value"]
         finally:
             proc.kill()
@@ -1033,18 +1103,21 @@ def run_in_browser(browser: str, page_path: Path, expression: str, settle: float
 @needs_numpy
 @unittest.skipUnless(_browser(), "no headless Chromium found")
 class TestAppInBrowser(unittest.TestCase):
-    def test_app_shows_the_report_the_host_sends(self):
+    def host(self, expression, caps="{}"):
         title, body = report.render(
             {"title": "Max-cut", "checks": [],
              "views": [graph_view(["a", "b", "a", "a"], edge_rule="cut")]},
             ising_result([1, -1, 1, 1], 0.0), None)
         result = json.dumps({"title": title, "html": body}).replace("</", "<\\/")
         host = (HOST.replace("APP", html.escape(report.app_page(), quote=True))
-                .replace("RESULT", result))
+                .replace("RESULT", result).replace("CAPS", caps))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "host.html"
             path.write_text(host, encoding="utf-8")
-            seen = json.loads(run_in_browser(_browser(), path, "seen()", settle=2.0))
+            return json.loads(run_in_browser(_browser(), path, expression, settle=2.0))
+
+    def test_app_shows_the_report_the_host_sends(self):
+        seen = self.host("seen()")
         self.assertEqual(seen["sent"][:2], ["ui/initialize", "ui/notifications/initialized"])
         self.assertIn("response", seen["sent"])          # the answer to ping
         self.assertEqual(seen["opened"], ["https://web.veloxq.com/jobs/job-1"])
@@ -1055,6 +1128,97 @@ class TestAppInBrowser(unittest.TestCase):
         self.assertGreater(seen["tips"], 0)
         self.assertEqual(seen["titles"], 0)
         self.assertGreater(max(seen["sizes"]), 300)      # grew to the report, past the frame
+
+    # Clicks every Share item of the first figure, then reports the downloads
+    # the host received and the message the menu shows.
+    SHARE = """(async function(){
+      var d=frame.contentDocument,box=d.querySelector('details.vq-share');
+      box.querySelectorAll('[data-share]').forEach(function(b){b.click();});
+      await new Promise(function(r){setTimeout(r,1000);});
+      var msg=box.querySelector('.vq-share-msg');
+      return JSON.stringify({downloads:downloads,message:msg.hidden?null:msg.textContent});
+    })()"""
+
+    def test_app_downloads_through_the_host(self):
+        seen = self.host(self.SHARE, caps="{downloadFile:{}}")
+        files = {c["resource"]["uri"]: c["resource"]
+                 for d in seen["downloads"] for c in d["contents"]}
+        self.assertEqual(sorted((u, f["mimeType"]) for u, f in files.items()),
+                         [("file:///graph-edges.csv", "text/csv"),
+                          ("file:///graph-nodes.csv", "text/csv"),
+                          ("file:///graph.png", "image/png")])
+        self.assertTrue(files["file:///graph.png"]["blob"].startswith("iVBORw0KGgo"))  # PNG
+        self.assertTrue(files["file:///graph-nodes.csv"]["text"].startswith("node,group\r\n"))
+        self.assertIsNone(seen["message"])
+
+    def test_app_says_when_the_host_cannot_download(self):
+        seen = self.host(self.SHARE)
+        self.assertEqual(seen["downloads"], [])
+        self.assertEqual(seen["message"], "This host does not allow downloads.")
+
+
+@needs_numpy
+@unittest.skipUnless(_browser(), "no headless Chromium found")
+class TestPageShareInBrowser(unittest.TestCase):
+    def test_page_downloads_the_image_and_the_data(self):
+        html = page({"title": "Max-cut", "checks": [],
+                     "views": [graph_view(["a", "b", "a", "a"], edge_rule="cut")]},
+                    ising_result([1, -1, 1, 1], 0.0))
+        clicks = """(async function(){
+          var got=[];
+          HTMLAnchorElement.prototype.click=function(){
+            var a=this;got.push(fetch(a.href).then(function(r){return r.arrayBuffer();})
+              .then(function(b){return {name:a.download,size:b.byteLength,
+                head:Array.from(new Uint8Array(b.slice(0,10))),
+                type:a.href.slice(0,5)};}));};
+          document.querySelector('details.vq-share').querySelectorAll('[data-share]')
+            .forEach(function(b){b.click();});
+          await new Promise(function(r){setTimeout(r,1000);});
+          return JSON.stringify({files:await Promise.all(got),
+            quoted:vqCsv({r:[[0,1,2]],s:['a, "b"','c\\nd','e']})});
+        })()"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.html"
+            path.write_text(html, encoding="utf-8")
+            seen = json.loads(run_in_browser(_browser(), path, clicks, settle=1.0))
+        files = {f["name"]: f for f in seen["files"]}
+        self.assertEqual(sorted(files), ["graph-edges.csv", "graph-nodes.csv", "graph.png"])
+        self.assertEqual(files["graph.png"]["head"][:8], [137, 80, 78, 71, 13, 10, 26, 10])
+        self.assertGreater(files["graph.png"]["size"], 1000)
+        self.assertEqual(bytes(files["graph-nodes.csv"]["head"]).decode(), "node,group")
+        self.assertEqual(seen["quoted"], '"a, ""b""","c\nd",e\r\n')
+
+    def test_artifact_viewer_saves_through_its_downloads_capability(self):
+        html = page({"title": "Max-cut", "checks": [],
+                     "views": [graph_view(["a", "b", "a", "a"], edge_rule="cut")]},
+                    ising_result([1, -1, 1, 1], 0.0))
+        # Plays a claude.ai artifact viewer: the edges CSV is declined.
+        clicks = """(async function(){
+          var got=[],links=0;
+          HTMLAnchorElement.prototype.click=function(){links++;};
+          window.claude={use:function(name){return Promise.resolve(name!=='downloads'?null:{
+            save:function(f){
+              if(/edges/.test(f.filename))return Promise.reject({code:'declined',message:'no'});
+              got.push(f.data.arrayBuffer().then(function(b){return {name:f.filename,
+                size:b.byteLength,head:Array.from(new Uint8Array(b.slice(0,10)))};}));
+              return Promise.resolve({status:'saved'});}});}};
+          var box=document.querySelector('details.vq-share');
+          box.querySelectorAll('[data-share]').forEach(function(b){b.click();});
+          await new Promise(function(r){setTimeout(r,1000);});
+          var msg=box.querySelector('.vq-share-msg');
+          return JSON.stringify({files:await Promise.all(got),links:links,
+            message:msg.hidden?null:msg.textContent});
+        })()"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.html"
+            path.write_text(html, encoding="utf-8")
+            seen = json.loads(run_in_browser(_browser(), path, clicks, settle=1.0))
+        files = {f["name"]: f for f in seen["files"]}
+        self.assertEqual(sorted(files), ["graph-nodes.csv", "graph.png"])
+        self.assertEqual(files["graph.png"]["head"][:8], [137, 80, 78, 71, 13, 10, 26, 10])
+        self.assertEqual(bytes(files["graph-nodes.csv"]["head"]).decode(), "node,group")
+        self.assertEqual(seen["links"], 0)
+        self.assertIsNone(seen["message"])          # a declined save is not an error
 
 
 @needs_numpy
@@ -1123,7 +1287,7 @@ class TestUnits(unittest.TestCase):
         html = page(result=ising_result([1, 1, -1], -3.0), model=model)
         self.assertIn('Coefficient range</div><div class="value">1 to 2 J</div>', html)
         self.assertIn("0 – 1 · weight -1 J · ", html)
-        self.assertIn("<th>weight (J)</th>", html)
+        self.assertEqual(share_tables(html)[0][1][0], ["from", "to", "weight (J)", "state"])
 
     def test_quota_is_in_milliseconds(self):
         html = page(result=ising_result([1, -1], statistics={"total_quota_usage": 30156}))

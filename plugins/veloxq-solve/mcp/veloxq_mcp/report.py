@@ -20,6 +20,7 @@ hard size limits; exceeding one is an error, not a silently thinned plot.
 from __future__ import annotations
 
 import html
+import json
 import math
 import re
 import sys
@@ -43,7 +44,7 @@ MAX_TABLE_ROWS = 2000
 MAX_STRIP = 4096         # best-sample strip, in variables or blocks of variables
 COARSE_BLOCKS = (40, 20, 12)   # index blocks in the simplified coupling graph, fewer
                                # when nearly every pair of blocks shares a coupling
-TWIN_ROWS = 300          # rows shown in a figure's data table
+TOP_ROWS = 300           # rows shown in the best-samples table
 MAX_TEXT = 300           # characters in any string of the view
 MAX_VIEWS = 10           # figures in one report
 MAX_TIP = 120            # characters in a hover text
@@ -652,7 +653,7 @@ def network_figure(kind, title, caption, labels, groups, group_order, edges,
                [[lab, "" if g is None else g] for lab, g in zip(labels, groups)])]
     if edges:
         tables.append(("Edges", ["from", "to", col_name("weight", unit), "state"],
-                       [[labels[u], labels[v], "" if w is None else fmt(w),
+                       [[labels[u], labels[v], "" if w is None else w,
                          edge_labels[s]] for u, v, w, s in edges]))
     return Figure(kind, title, caption, height, body, tables, present["violated"],
                   simplified)
@@ -818,7 +819,7 @@ def view_route(v: dict, where: str) -> Figure:
                 t += f" · {with_unit(d, unit)}"
             edges.append({"u": a, "v": b, "cls": f"vq-l{r + 1} vq-route",
                           "head": f"vq-s{r + 1}", "tip": t, "d": d})
-            rows.append([name, step, labels[a], labels[b], "" if d is None else fmt(d)])
+            rows.append([name, step, labels[a], labels[b], "" if d is None else d])
         starts.add(seq[0])
         entries.append(("edge", f"vq-l{r + 1} vq-route",
                         name + (f" (length {with_unit(total, unit)})" if dist is not None
@@ -971,8 +972,8 @@ def view_bins(v: dict, where: str) -> Figure:
                 t += f" · {value_label} {fmt(num(it['value'], f'{w}[{k}].value'))}"
             segs.append({"a": at, "b": at + size, "cls": cls, "ink": ink,
                          "text": str(it["label"]), "tip": t})
-            table.append([bin_label, it["label"], fmt(size),
-                          fmt(it["value"]) if "value" in it else ""])
+            table.append([bin_label, it["label"], size,
+                          it["value"] if "value" in it else ""])
             at += size
         if segs:
             segs[-1]["rr"] = 4.0
@@ -1053,7 +1054,7 @@ def view_schedule(v: dict, where: str) -> Figure:
             segs.append({"a": a, "b": b, "cls": f"vq-s{k}" if k else "vq-mute",
                          "ink": f"vq-o{k}" if k else "vq-t",
                          "text": name, "tip": t, "rl": 3.0, "rr": 3.0, "flag": bad})
-            table.append([label, name, fmt(a), fmt(b), "" if g is None else g,
+            table.append([label, name, a, b, "" if g is None else g,
                           "violated" if bad else ""])
         rows.append({"label": label, "segs": segs})
     entries = [("rect", f"vq-s{slot[g]}", str(g), None) for g in order] \
@@ -1092,7 +1093,7 @@ def view_bars(v: dict, where: str) -> Figure:
         entries = [("rect", "vq-s1", str(v.get("highlight_label", "selected")), None),
                    ("rect", "vq-mute", str(v.get("other_label", "not selected")), None)]
     body, height = draw_lanes(rows, v.get("unit", ""), entries)
-    table = [[it["label"], fmt(it["value"])]
+    table = [[it["label"], it["value"]]
              + ([("yes" if it.get("highlight") else "")] if emphasis else [])
              for it in items]
     cols = ["item", col_name("value", v.get("unit", ""))] + (
@@ -1285,11 +1286,11 @@ def view_grid(v: dict, where: str) -> Figure:
     cols = [str(c) for c in cols] if cols else None
     body, height = draw_grid(cells, rows, cols, texts, violations,
                              str(v.get("on_label", "1")), str(v.get("off_label", "0")))
-    table = [[(rows[r] if rows else r)] + ["" if x is None else fmt(x) for x in row]
+    table = [[(rows[r] if rows else r)] + ["" if x is None else x for x in row]
              for r, row in enumerate(cells)]
     header = [""] + (cols if cols else [str(c) for c in range(nc)])
-    tables = [("Cells", header, table)] if nc <= 40 else []
-    return Figure("grid", v.get("title", ""), v.get("caption", ""), height, body, tables,
+    return Figure("grid", v.get("title", ""), v.get("caption", ""), height, body,
+                  [("Cells", header, table)],
                   len({tuple(rc) for rc in violations}))
 
 
@@ -1649,6 +1650,18 @@ ul.checks li:first-child{border-top:0}
 details{margin-top:8px;font-size:13px}
 summary{cursor:pointer;color:var(--ink2)}
 details dl{margin-top:6px}
+.fig-head{display:flex;align-items:flex-start;gap:12px}
+details.vq-share{position:relative;margin:0 0 0 auto;flex:none}
+.vq-share summary{list-style:none;padding:2px 10px;border:1px solid var(--line);border-radius:6px}
+.vq-share summary::-webkit-details-marker{display:none}
+.vq-share summary:hover,.vq-share[open] summary{color:var(--ink)}
+.vq-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:5;min-width:210px;padding:4px;
+background:var(--surface);border:1px solid var(--line);border-radius:8px;
+box-shadow:0 4px 16px rgba(0,0,0,.15)}
+.vq-menu button{display:block;width:100%;text-align:left;font:inherit;color:var(--ink);
+background:none;border:0;border-radius:4px;padding:6px 10px;cursor:pointer}
+.vq-menu button:hover,.vq-menu button:focus-visible{background:var(--plane)}
+.vq-share-msg{color:var(--bad);margin:4px 10px}
 .run{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;
 margin-bottom:14px}
 .run .card{margin:0}
@@ -1704,14 +1717,93 @@ function vqTips(root){
 })();
 """
 
+# The PNG is drawn from a copy of the SVG that carries the figure CSS and the
+# current theme's values of the tokens it uses, so it looks as on the page.
+# `save` takes {name, mime, text} or {name, mime, blob} with blob in base64
+# and returns a promise. vqDownload saves through a claude.ai artifact
+# viewer's `downloads` capability when there is one, since that frame
+# cannot download by itself; the publish must declare {downloads: true}.
+SHARE_JS = """
+function vqPng(svg){
+  var vb=svg.viewBox.baseVal,cs=getComputedStyle(svg),copy=svg.cloneNode(true),vars='';
+  (VQ_FIG_CSS.match(/--[\\w-]+/g)||[]).forEach(function(v){
+    vars+=v+':'+cs.getPropertyValue(v)+';';});
+  var style=document.createElementNS(svg.namespaceURI,'style');
+  style.textContent='svg{'+vars+'}'+VQ_FIG_CSS;
+  copy.insertBefore(style,copy.firstChild);
+  copy.setAttribute('width',vb.width);copy.setAttribute('height',vb.height);
+  return new Promise(function(ok,no){
+    var img=new Image();
+    img.onload=function(){
+      var k=2,c=document.createElement('canvas'),g=c.getContext('2d');
+      c.width=Math.ceil(vb.width*k);c.height=Math.ceil(vb.height*k);
+      g.fillStyle=cs.getPropertyValue('--surface');g.fillRect(0,0,c.width,c.height);
+      g.scale(k,k);g.drawImage(img,0,0,vb.width,vb.height);
+      ok(c.toDataURL('image/png').split(',')[1]);};
+    img.onerror=function(){no(new Error('The figure could not be drawn as an image.'));};
+    img.setAttribute('src','data:image/svg+xml;charset=utf-8,'
+      +encodeURIComponent(new XMLSerializer().serializeToString(copy)));
+  });
+}
+function vqDownload(f){
+  var data=new Blob([f.text!=null?f.text
+    :Uint8Array.from(atob(f.blob),function(c){return c.charCodeAt(0);})],{type:f.mime});
+  var viewer=window.claude&&window.claude.use?window.claude.use('downloads'):Promise.resolve(null);
+  return viewer.then(function(d){
+    if(d)return d.save({filename:f.name,data:data}).then(function(){},function(e){
+      if(!e||e.code!=='declined')throw new Error((e&&e.message)||'The download failed.');});
+    if(window.claude&&window.top!==window)throw new Error('This view does not allow downloads.');
+    var a=document.createElement('a'),url=URL.createObjectURL(data);
+    a.setAttribute('href',url);a.download=f.name;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+  });
+}
+function vqCsv(t){
+  return t.r.map(function(row){return row.map(function(k){
+    var v=t.s[k];return /[",\\r\\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;
+  }).join(',')+'\\r\\n';}).join('');
+}
+function vqShare(save){
+  document.addEventListener('click',function(e){
+    document.querySelectorAll('details.vq-share[open]').forEach(function(d){
+      if(!d.contains(e.target))d.open=false;});
+    var b=e.target.closest?e.target.closest('[data-share]'):null;
+    if(!b)return;
+    var box=b.closest('.vq-share'),msg=box.querySelector('.vq-share-msg'),
+      what=b.getAttribute('data-share'),name=b.getAttribute('data-file');
+    msg.hidden=true;
+    var file=what==='png'
+      ?vqPng(box.closest('.vq-figure').querySelector('svg.vq-fig')).then(function(blob){
+        return {name:name,mime:'image/png',blob:blob};})
+      :Promise.resolve({name:name,mime:'text/csv',
+        text:vqCsv(JSON.parse(box.getAttribute('data-csv'))[+what])});
+    file.then(save).then(function(){box.open=false;},
+      function(err){msg.textContent=err.message;msg.hidden=false;});
+  });
+}
+"""
+
 APP_PROTOCOL = "2026-01-26"
 
 # structuredContent.html is markup built by `render` with every value
 # escaped, so it is inserted as HTML.
 APP_JS = """
 (function(){
-  var main=document.getElementById('vq-report'),root=document.documentElement,nextId=1;
+  var main=document.getElementById('vq-report'),root=document.documentElement,nextId=1,
+    pending={},canDownload=false;
   function post(m){m.jsonrpc='2.0';window.parent.postMessage(m,'*');}
+  function request(method,params){
+    var id=++nextId;post({id:id,method:method,params:params});
+    return new Promise(function(ok,no){pending[id]=[ok,no];});
+  }
+  // A sandboxed frame cannot save files itself; the host saves them.
+  vqShare(function(f){
+    if(!canDownload)return Promise.reject(new Error('This host does not allow downloads.'));
+    var r={uri:'file:///'+encodeURIComponent(f.name),mimeType:f.mime};
+    if(f.text!=null)r.text=f.text;else r.blob=f.blob;
+    return request('ui/download-file',{contents:[{type:'resource',resource:r}]});
+  });
   // The sandboxed frame cannot open pages itself; the host opens them.
   document.addEventListener('click',function(e){
     var a=e.target.closest?e.target.closest('a[href]'):null;
@@ -1751,8 +1843,14 @@ APP_JS = """
     if(m.id===1&&!m.method){
       if(m.error){note('The host did not start the report view: '+(m.error.message||''));return;}
       context(m.result&&m.result.hostContext);
+      canDownload=!!(m.result&&m.result.hostCapabilities
+        &&m.result.hostCapabilities.downloadFile);
       post({method:'ui/notifications/initialized'});
       var ro=new ResizeObserver(measure);ro.observe(root);ro.observe(document.body);measure();
+    }else if(m.id!=null&&!m.method&&pending[m.id]){
+      var p=pending[m.id];delete pending[m.id];
+      if(m.error)p[1](new Error(m.error.message||'The host refused the request.'));
+      else p[0](m.result);
     }else if(m.method==='ui/notifications/tool-result')show(m.params);
     else if(m.method==='ui/notifications/tool-cancelled')note('The report was cancelled.');
     else if(m.method==='ui/notifications/host-context-changed')context(m.params);
@@ -1765,19 +1863,49 @@ APP_JS = """
 """.replace("PROTOCOL", APP_PROTOCOL)
 
 
+def share_js() -> str:
+    return f"var VQ_FIG_CSS={json.dumps(figure_css())};{SHARE_JS}"
+
+
 def figure_card(fig: Figure) -> str:
-    parts = ['<section class="card">']
-    if fig.title:
-        parts.append(f"<h3>{esc(fig.title)}{'*' if fig.simplified else ''}</h3>")
+    return f'<section class="card">{figure_body(fig)}</section>'
+
+
+def figure_body(fig: Figure) -> str:
+    head = f"<h3>{esc(fig.title)}{'*' if fig.simplified else ''}</h3>" if fig.title else ""
+    parts = [f'<div class="fig-head">{head}{share_menu(fig)}</div>']
     if fig.caption:
         parts.append(f'<p class="caption">{esc(fig.caption)}</p>')
     parts.append(f'<div class="scroll">{fig.svg()}</div>')
-    if fig.tables:
-        twins = "".join(f"<h4>{esc(h)}</h4>{html_table(c, r, limit=TWIN_ROWS)}"
-                        for h, c, r in fig.tables)
-        parts.append(f"<details><summary>Data</summary>{twins}</details>")
-    parts.append("</section>")
-    return "".join(parts)
+    return f'<div class="vq-figure">{"".join(parts)}</div>'
+
+
+def slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def pooled(columns, rows) -> dict:
+    """A table as its distinct cell texts and rows of indices into them, so a
+    label repeated on every row is stored once."""
+    pool: dict[str, int] = {}
+    return {"r": [[pool.setdefault(str(c), len(pool)) for c in row]
+                  for row in [columns, *rows]], "s": list(pool)}
+
+
+def share_menu(fig: Figure) -> str:
+    """The figure's Share menu: its image as PNG and each of its tables as CSV.
+    SHARE_JS does the downloads."""
+    base = slug(fig.title) or fig.kind
+    items = [("png", f"{base}.png", "Download image (PNG)")]
+    for k, (heading, _, _) in enumerate(fig.tables):
+        what = "data" if len(fig.tables) == 1 else heading.lower()
+        items.append((str(k), f"{base}-{slug(heading)}.csv", f"Download {what} (CSV)"))
+    buttons = "".join(f'<button type="button" data-share="{a}" data-file="{esc(f)}">'
+                      f"{esc(label)}</button>" for a, f, label in items)
+    data = esc(json.dumps([pooled(c, r) for _, c, r in fig.tables]))
+    return (f'<details class="vq-share" data-csv="{data}"><summary>Share</summary>'
+            f'<div class="vq-menu">{buttons}<p class="vq-share-msg" hidden></p></div>'
+            "</details>")
 
 
 def tiles_html(tiles) -> str:
@@ -1898,7 +2026,7 @@ def render(view: dict | None, result: dict | None, model: Model | None) -> tuple
         quality.append('<section class="card"><h3>Best distinct samples</h3>'
                        + html_table(["rank", col_name(axis, ENERGY_UNIT)]
                                     + (["state"] if compact else []), rows,
-                                    limit=TWIN_ROWS)
+                                    limit=TOP_ROWS)
                        + "</section>")
         sections.append("<h2>Sample quality</h2>" + "".join(quality))
 
@@ -2051,7 +2179,7 @@ def page(title: str, body: str) -> str:
         f"<title>{esc(title)}</title>"
         f"<style>{theme_css()}{PAGE_CSS}{figure_css()}</style>"
         f'<main>{body}</main><div id="vq-tip" hidden></div>'
-        f"<script>{TIPS_JS}vqTips(document);</script>")
+        f"<script>{share_js()}{TIPS_JS}vqTips(document);vqShare(vqDownload);</script>")
 
 
 def app_page() -> str:
@@ -2063,4 +2191,4 @@ def app_page() -> str:
         f"<style>{theme_css()}{PAGE_CSS}{APP_CSS}{figure_css()}</style></head>"
         '<body><main id="vq-report"><p class="note">Building the report…</p></main>'
         '<div id="vq-tip" hidden></div>'
-        f"<script>{TIPS_JS}{APP_JS}</script></body></html>")
+        f"<script>{share_js()}{TIPS_JS}{APP_JS}</script></body></html>")
