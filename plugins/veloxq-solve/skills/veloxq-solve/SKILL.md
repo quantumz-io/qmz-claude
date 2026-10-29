@@ -160,7 +160,10 @@ omitted. An inline spec is limited to 20,000 coefficients, indices below
    energy bookkeeping. A mismatch beyond a constant offset is an error, not a
    result. The answer holds `best_sample` (indexed by variable),
    `best_objective`, `num_samples`, `num_samples_at_best`, `top` (the best
-   distinct samples), `warnings` and `energy_check`.
+   distinct samples), `warnings` and `energy_check`. For an HDF5 file whose
+   variables have labels, `best_sample` follows the integer labels in
+   ascending order. Any labels other than `0..n-1` come back as `labels`:
+   `best_sample[k]` is the variable named `labels[k]`.
 
 Each submission is a real job on shared hardware charged to the user's
 balance: budget one submission for small problems, and only resubmit

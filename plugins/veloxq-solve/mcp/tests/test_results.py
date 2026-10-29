@@ -87,6 +87,41 @@ class TestSummarize(unittest.TestCase):
                         self.model, top=5)
         self.assertEqual(doc["best_sample"], [1, 1, -1])
 
+    def test_samples_follow_the_integer_labels_of_a_native_file(self):
+        import tempfile
+
+        import h5py
+        import numpy as np
+
+        from veloxq_mcp.models import load_model
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "native.h5")
+            with h5py.File(path, "w") as f:
+                g = f.create_group("Ising")
+                g["biases"] = np.array([1.0, 0.0, 0.0])        # on the variable labeled 2
+                c = g.create_group("couplings")
+                c["I"], c["J"], c["V"] = np.array([2]), np.array([3]), np.array([-1.0])
+                g["labels"] = np.array([b"2", b"0", b"1"])
+            model = load_model(path=path)
+        # The platform names its columns by label: s2 = -1, s0 = s1 = 1.
+        doc = summarize(sampleset([[1, 1, -1]], [-2.0], variables=["0", "1", "2"]),
+                        model, top=1)
+        self.assertEqual(doc["best_sample"], [1, 1, -1])
+        self.assertEqual(doc["best_objective"], -2.0)
+        self.assertNotIn("labels", doc)
+
+    def test_other_labels_name_the_columns(self):
+        from veloxq_mcp.models import Model
+
+        model = Model("ising", [0.0, 0.0, 0.0], [0, 1], [1, 2], [-1.0, 0.5],
+                      labels=["b", "a", "c"])
+        samples = [[1, 1, -1]]                          # columns a, b, c
+        doc = summarize(sampleset(samples, [-1.5], variables=["a", "b", "c"]), model, top=1)
+        self.assertEqual(doc["best_sample"], [1, 1, -1])
+        self.assertEqual(doc["labels"], ["b", "a", "c"])
+        self.assertNotIn("labels", summarize(sampleset(samples, [-1.5]), self.model, top=1))
+
     def test_float_variable_labels_are_an_error(self):
         with self.assertRaisesRegex(ResultError, "unexpected variables"):
             summarize(sampleset([[1, 1, 1]], [0.0], variables=[0.5, 1.5, 2.5]),

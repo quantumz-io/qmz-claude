@@ -219,6 +219,35 @@ class TestHdf5(unittest.TestCase):
         self.assertEqual(m.linear, {0: 0.5, 2: -1.0})
         self.assertEqual(m.labels, ["a", "b", "c"])
 
+    def native_labeled(self, name, labels):
+        """Biases 0.1 * label and a coupling between file positions 1-2 and 2-3."""
+        import numpy as np
+
+        def build(f):
+            g = f.create_group("Ising")
+            g["biases"] = np.array([0.1 * int(x) for x in labels])
+            c = g.create_group("couplings")
+            c["I"], c["J"], c["V"] = np.array([1, 2]), np.array([2, 3]), np.array([-1.0, 2.0])
+            g["labels"] = np.array([x.encode() for x in labels])
+
+        return load_model(path=self._write(name, build))
+
+    def test_native_integer_labels_order_the_variables(self):
+        # The SDK writes integer keys as strings in insertion order.
+        m = self.native_labeled("scrambled.h5", ["2", "0", "1"])
+        self.assertEqual(m.linear, {1: 0.1, 2: 0.2})
+        self.assertEqual(m.quadratic, {(0, 2): -1.0, (0, 1): 2.0})
+        self.assertIsNone(m.labels)
+
+    def test_native_integer_labels_with_gaps_keep_their_names(self):
+        m = self.native_labeled("gaps.h5", ["10", "3", "7"])
+        self.assertEqual(m.labels, ["3", "7", "10"])
+        self.assertEqual(m.quadratic, {(0, 2): -1.0, (0, 1): 2.0})
+
+    def test_native_repeated_label_is_refused(self):
+        with self.assertRaisesRegex(ModelError, "label '1' names 2 variables"):
+            self.native_labeled("twice.h5", ["1", "0", "1"])
+
     def test_native_couplings_stored_once_in_either_order(self):
         import numpy as np
 

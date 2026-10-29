@@ -53,7 +53,8 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
     """Decode a ``dimod.SampleSet`` into the result document.
 
     With ``model`` the samples are reordered to ``0..n-1``, every objective is
-    recomputed locally and checked against the platform's energies. Without
+    recomputed locally and checked against the platform's energies. A model
+    with labels adds ``labels``, the name of each column. Without
     it the platform's energies are the objectives and the columns stay in the
     order the platform returned them.
     """
@@ -145,7 +146,7 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
         if len(top_rows) >= top:
             break
 
-    return {
+    doc = {
         "type": kind,
         "vartype": vartype,
         "num_variables": int(n),
@@ -159,3 +160,6 @@ def summarize(result, model: Model | None, top: int) -> dict[str, Any]:
         "warnings": warnings,
         "result_info": {k: str(v) for k, v in dict(result.info).items()},
     }
+    if model is not None and model.labels is not None:
+        doc["labels"] = model.labels
+    return doc

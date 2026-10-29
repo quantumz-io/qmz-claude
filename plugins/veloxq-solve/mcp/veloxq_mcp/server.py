@@ -1031,6 +1031,9 @@ def get_result(
     objective is recomputed with dimod and checked against the platform's
     energies; without the model the platform's energies are reported as is.
     `top` (at most 100) is the number of distinct best samples returned.
+    Samples are indexed by variable. A model file whose variables have
+    integer labels is indexed by label order; any labels other than 0..n-1
+    come back as `labels`, the name of each index.
     `output` writes the full result document as JSON (an absolute path ending
     in .json), for a script that decodes the samples; an existing file is
     kept unless `overwrite` is true. With `output` and more than 1,000
@@ -1052,8 +1055,9 @@ def get_result(
         if doc["num_variables"] > INLINE_SAMPLE_VARIABLES:
             del doc["best_sample"]
             doc["top"] = [{"objective": t["objective"]} for t in doc["top"]]
+            named = " with the variables' labels" if doc.pop("labels", None) else ""
             doc["samples"] = (f"best_sample and the top samples have {doc['num_variables']} "
-                              f"values each and are in {out_path}")
+                              f"values each and are in {out_path}{named}")
     doc.pop("result_info", None)
     doc.pop("statistics", None)
     return doc

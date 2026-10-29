@@ -778,6 +778,26 @@ class TestGetResult(ServerCase):
         # Without an output file the samples stay inline.
         self.assertEqual(server.get_result("job-1")["best_sample"], [-1] * n)
 
+    def test_long_labels_stay_in_the_output_file(self):
+        import h5py
+        import numpy as np
+
+        n = server.INLINE_SAMPLE_VARIABLES + 1
+        labels = [f"v{k}" for k in range(n)]
+        model_path = Path(self.tmp.name) / "native.h5"
+        with h5py.File(model_path, "w") as f:
+            g = f.create_group("Ising")
+            g["biases"] = np.r_[np.zeros(n - 1), 1.0]
+            c = g.create_group("couplings")
+            c["I"], c["J"], c["V"] = np.array([1]), np.array([2]), np.array([0.0])
+            g["labels"] = np.array([x.encode() for x in labels])
+        self._completed([[1] * n, [-1] * n], [1.0, -1.0], labels)
+        out_path = Path(self.tmp.name) / "result.json"
+        out = server.get_result("job-1", path=str(model_path), output=str(out_path))
+        self.assertNotIn("labels", out)
+        self.assertIn("labels", out["samples"])
+        self.assertEqual(json.loads(out_path.read_text())["labels"], labels)
+
     def test_result_names_the_solver(self):
         self._completed([[1, -1]], [-1.0], [0, 1])
         self.assertEqual(server.get_result("job-1")["solver"], "VeloxQ")

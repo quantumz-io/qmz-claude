@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +52,9 @@ LINEAR_NAMES = {"biases", "bias", "h", "linear", "fields"}
 QUAD_NAMES = {"couplings", "coupling", "j", "quadratic", "interactions"}
 QUBO_NAMES = {"q", "qubo"}
 
+INTEGER_LABEL = re.compile(r"-?(0|[1-9][0-9]*)")
+"""A label in the form the SDK writes an integer variable."""
+
 
 class ModelError(ValueError):
     """The spec or file does not describe a model unambiguously."""
@@ -68,8 +73,9 @@ class Model:
     length is ``n``. ``rows``, ``cols`` and ``values`` hold each coupling
     once, with ``rows < cols`` and no pair repeated. ``native_path`` is set
     when the model came from an HDF5 file in the platform's own layout, which
-    is uploaded as is. ``labels`` are the variable names stored in such a
-    file, if any.
+    is uploaded as is. ``labels`` name the variables of such a file. Integer
+    labels put the variables in ascending label order, and labels that read
+    ``0..n-1`` are None. Other labels keep the file's order.
     """
 
     kind: str
@@ -133,6 +139,26 @@ class Model:
 
         return dimod.BinaryQuadraticModel.from_numpy_vectors(
             self.biases, (self.rows, self.cols, self.values), 0.0, self.vartype)
+
+
+def _by_label(labels, biases, rows, cols, values):
+    """The variables in ascending order of their labels when every label is an
+    integer, else in file order. Labels that then read 0..n-1 say nothing the
+    indices do not and come back as None."""
+    import numpy as np
+
+    if not all(INTEGER_LABEL.fullmatch(x) for x in labels):
+        return biases, rows, cols, values, labels
+    order = np.argsort([int(x) for x in labels], kind="stable")
+    new = np.empty_like(order)
+    new[order] = np.arange(len(order))
+    i, j = new[rows], new[cols]
+    rows, cols = np.minimum(i, j), np.maximum(i, j)
+    keep = np.lexsort((cols, rows))
+    labels = [labels[k] for k in order]
+    if labels == [str(k) for k in range(len(labels))]:
+        labels = None
+    return biases[order], rows[keep], cols[keep], values[keep], labels
 
 
 def _couplings(i, j, v, *, combine: str):
@@ -419,6 +445,11 @@ def model_from_h5(path: str, forced_type: str | None = None) -> Model:
                           for x in np.asarray(g["labels"])]
                 if len(labels) != n:
                     raise ModelError(f"{path}: {len(labels)} labels for {n} variables")
+                label, count = Counter(labels).most_common(1)[0]
+                if count > 1:
+                    raise ModelError(f"{path}: label {label!r} names {count} variables")
+                biases, rows, cols, values, labels = _by_label(labels, biases, rows, cols,
+                                                               values)
             return Model(kind="ising", biases=biases, rows=rows, cols=cols, values=values,
                          labels=labels, native_path=path, notes=notes)
 
