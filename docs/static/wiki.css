@@ -7,14 +7,15 @@
   --muted: #5b6480;
   --line: #dde3ef;
   --line-strong: #c3cbdd;
-  --accent: #0b6f6b;
-  --accent-soft: #d7efed;
+  --accent: #1d4ed8;
+  --accent-soft: #dbeafe;
   --accent-ink: #ffffff;
   --side-bg: #0e1526;
   --side-ink: #d3dae9;
   --side-muted: #8b96b1;
   --side-line: #1f2a44;
   --side-active: #16243f;
+  --side-accent: #60a5fa;
   --code-bg: #eef2f8;
   --code-ink: #1d2436;
   --prompt-bg: #fff6e6;
@@ -25,8 +26,8 @@
   --ok: #0a7f2e;
   --warn: #9a6400;
   --bad: #c0392b;
-  --tool-mcp: #0b6f6b;
-  --tool-mcp-bg: #d7efed;
+  --tool-mcp: #1d4ed8;
+  --tool-mcp-bg: #dbeafe;
   --tool-local: #4a5578;
   --tool-local-bg: #e6eaf4;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
@@ -39,12 +40,12 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0b1019; --surface: #121929; --ink: #e5eaf4; --muted: #9ba5c0;
-    --line: #222c43; --line-strong: #33405e; --accent: #45c4bb; --accent-soft: #123a3a;
-    --accent-ink: #06201f; --side-bg: #080d17; --side-ink: #d3dae9; --side-muted: #8b96b1;
+    --line: #222c43; --line-strong: #33405e; --accent: #60a5fa; --accent-soft: #172a4d;
+    --accent-ink: #0b1a33; --side-bg: #080d17; --side-ink: #d3dae9; --side-muted: #8b96b1;
     --side-line: #1a2338; --side-active: #131d33; --code-bg: #0a0f1a; --code-ink: #dbe2f0;
     --prompt-bg: #241c0e; --prompt-line: #4d3a16; --prompt-label: #e3b462;
     --answer-bg: #0f2218; --answer-line: #1f4a30; --ok: #4ccb6f; --warn: #e3b462; --bad: #ef7b6d;
-    --tool-mcp: #45c4bb; --tool-mcp-bg: #123a3a; --tool-local: #aab4d0; --tool-local-bg: #1a2238;
+    --tool-mcp: #60a5fa; --tool-mcp-bg: #172a4d; --tool-local: #aab4d0; --tool-local-bg: #1a2238;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
     color-scheme: dark;
@@ -52,12 +53,12 @@
 }
 :root[data-theme="dark"] {
   --bg: #0b1019; --surface: #121929; --ink: #e5eaf4; --muted: #9ba5c0;
-  --line: #222c43; --line-strong: #33405e; --accent: #45c4bb; --accent-soft: #123a3a;
-  --accent-ink: #06201f; --side-bg: #080d17; --side-ink: #d3dae9; --side-muted: #8b96b1;
+  --line: #222c43; --line-strong: #33405e; --accent: #60a5fa; --accent-soft: #172a4d;
+  --accent-ink: #0b1a33; --side-bg: #080d17; --side-ink: #d3dae9; --side-muted: #8b96b1;
   --side-line: #1a2338; --side-active: #131d33; --code-bg: #0a0f1a; --code-ink: #dbe2f0;
   --prompt-bg: #241c0e; --prompt-line: #4d3a16; --prompt-label: #e3b462;
   --answer-bg: #0f2218; --answer-line: #1f4a30; --ok: #4ccb6f; --warn: #e3b462; --bad: #ef7b6d;
-  --tool-mcp: #45c4bb; --tool-mcp-bg: #123a3a; --tool-local: #aab4d0; --tool-local-bg: #1a2238;
+  --tool-mcp: #60a5fa; --tool-mcp-bg: #172a4d; --tool-local: #aab4d0; --tool-local-bg: #1a2238;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
   color-scheme: dark;
@@ -102,7 +103,7 @@ small, .small { font-size: 13.5px; color: var(--muted); }
 }
 .brand { display: flex; align-items: center; gap: 12px; color: var(--side-ink); }
 .brand:hover { text-decoration: none; }
-.brand-mark { width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg, #1aa39c, #0b6f6b); display: grid; place-items: center; color: #fff; font-family: var(--font-display); font-weight: 800; font-size: 18px; flex: 0 0 auto; }
+.brand-mark { width: 38px; height: 38px; flex: 0 0 auto; }
 .brand-name { font-family: var(--font-display); font-weight: 700; font-size: 17px; line-height: 1.1; }
 .brand-sub { font-size: 12px; color: var(--side-muted); }
 .search { position: relative; }
@@ -127,7 +128,7 @@ small, .small { font-size: 13.5px; color: var(--muted); }
 .nav a { display: block; color: var(--side-ink); padding: 6px 10px; border-radius: 6px; }
 .nav a:hover { background: var(--side-active); text-decoration: none; }
 .nav .nav-page { font-weight: 600; }
-.nav .nav-page.current { background: var(--side-active); color: #fff; border-left: 3px solid var(--accent); padding-left: 7px; }
+.nav .nav-page.current { background: var(--side-active); color: #fff; border-left: 3px solid var(--side-accent); padding-left: 7px; }
 .nav .nav-sub { padding-left: 6px; border-left: 1px solid var(--side-line); margin: 4px 0 6px 12px; }
 .nav .nav-sub a { color: var(--side-muted); padding: 4px 10px; font-size: 13.5px; }
 .nav .nav-sub a.active { color: #fff; }

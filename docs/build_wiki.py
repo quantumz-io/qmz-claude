@@ -41,7 +41,7 @@ BUILT = build_date()
 TOOL_PREFIX = "mcp__plugin_veloxq-solve_veloxq__"
 
 PAGES = [
-    ("index.html", "Home", "QuantumZ plugins for Claude Code"),
+    ("index.html", "Home", "QuantumZ for Claude Code"),
     ("veloxq-solve.html", "veloxq-solve", "The veloxq-solve plugin"),
     ("veloxq-solve-examples.html", "Examples", "veloxq-solve examples"),
 ]
@@ -393,7 +393,7 @@ def build_home():
 <div class="hero">
   <span class="kicker">Claude Code plugin marketplace</span>
   <div>
-      <h1>QuantumZ plugins for Claude Code</h1>
+      <h1>QuantumZ for Claude Code</h1>
       <p class="lead">A marketplace of plugins that connect Claude to QuantumZ products. Add it once, install a plugin, and Claude gains the tools and the know-how to use the product from a normal conversation.</p>
       {codeblock("/plugin marketplace add quantumz-io/qmz-claude\n/plugin install veloxq-solve@quantumz", "In a Claude Code session", slash=True)}
       <p class="small">Two commands, no API keys in the conversation, no SDK to learn. The first plugin, <a href="veloxq-solve.html">veloxq-solve</a>, solves optimization problems on the VeloxQ platform.</p>
@@ -679,7 +679,7 @@ def sidebar(pages, current, index_json):
         nav.append("</div>")
     return f'''
 <aside class="sidebar" id="sidebar">
-  <a class="brand" href="index.html"><span class="brand-mark">Q</span><span><span class="brand-name">QuantumZ plugins</span><br><span class="brand-sub">for Claude Code</span></span></a>
+  <a class="brand" href="index.html"><img class="brand-mark" src="static/qmz-logo.svg" alt=""><span><span class="brand-name">QuantumZ</span><br><span class="brand-sub">for Claude Code</span></span></a>
   <div class="search">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
     <input id="search-input" type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off">
@@ -701,9 +701,9 @@ def render(pages, pg, index_json, skeleton=True):
     if next_:
         pager += f'<a class="next" href="{next_.file}"><span class="dir">Next</span><span>{esc(next_.title)}</span></a>'
     pager += "</nav>"
-    crumbs = f'<a href="index.html">QuantumZ plugins</a>' + ("" if pg.file == "index.html" else f'<span class="sep">/</span><span>{esc(pg.name)}</span>')
+    crumbs = f'<a href="index.html">QuantumZ</a>' + ("" if pg.file == "index.html" else f'<span class="sep">/</span><span>{esc(pg.name)}</span>')
     head = (f'<title>{esc(pg.title)}</title>\n<meta name="claude:viewport-fit-sides" content="cover">\n{FONTS}\n'
-            f'<link rel="stylesheet" href="static/wiki.css">')
+            f'<link rel="icon" type="image/svg+xml" href="static/qmz-logo.svg">\n<link rel="stylesheet" href="static/wiki.css">')
     body = f'''
 <div class="shell">
 {sidebar(pages, pg, index_json)}
@@ -712,7 +712,7 @@ def render(pages, pg, index_json, skeleton=True):
   <article class="content">
 {pg.body_html()}
 {pager}
-<p class="foot">QuantumZ plugins for Claude Code · documentation built {BUILT} from the repository at that date.</p>
+<p class="foot">QuantumZ for Claude Code · documentation built {BUILT} from the repository at that date.</p>
   </article>
 </div>
 </div>
