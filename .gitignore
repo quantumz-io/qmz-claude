@@ -6,3 +6,6 @@ __pycache__/
 .claude
 
 viewer.pid
+
+# Built by docs/build_wiki.py
+docs/_site/
