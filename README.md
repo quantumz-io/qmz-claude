@@ -5,12 +5,19 @@ providing QuantumZ plugins.
 
 ## Installation
 
-Add the marketplace, then install plugins from it:
+Run each command on its own in a Claude Code session.
 
-```
-/plugin marketplace add quantumz-io/qmz-claude
-/plugin install veloxq-solve@quantumz
-```
+- Register the marketplace:
+
+  ```bash
+  /plugin marketplace add quantumz-io/qmz-claude
+  ```
+
+- Install the plugin from this marketplace:
+
+  ```bash
+  /plugin install veloxq-solve@quantumz
+  ```
 
 ## Plugins
 
@@ -19,6 +26,6 @@ Add the marketplace, then install plugins from it:
 Solve QUBO/Ising optimization problems on the VeloxQ platform. Provides a
 skill that formulates combinatorial optimization problems, such as max-cut,
 graph coloring, knapsack, TSP, and scheduling, as QUBO or Ising models,
-submits them through the plugin's VeloxQ MCP server, and decodes and
+submits them through the VeloxQ MCP server of the VeloxQ API, and decodes and
 verifies the returned samples. See the
 [plugin README](plugins/veloxq-solve/README.md) for requirements and usage.

@@ -71,15 +71,28 @@ def slug(s):
 _counter = [0]
 
 
+MARKETPLACE_ADD = "/plugin marketplace add quantumz-io/qmz-claude"
+PLUGIN_INSTALL = "/plugin install veloxq-solve@quantumz"
+
+
 def codeblock(code, label=None, slash=False):
     _counter[0] += 1
     cid = f"code-{_counter[0]}"
     body = esc(code.rstrip("\n"))
     if slash:
+        # Claude Code runs one slash command per prompt. A pasted second line
+        # becomes part of the first command's argument.
+        if "\n" in body:
+            raise ValueError(f"slash codeblock must hold a single command: {code!r}")
         body = re.sub(r"^(/\S+)", r'<span class="prompt-token">\1</span>', body, flags=re.M)
     head = f'<span>{esc(label or "")}</span><button class="copy-btn" type="button" data-copy="{cid}">Copy</button>'
     return (f'<div class="codeblock{" slash" if slash else ""}"><div class="cb-head">{head}</div>'
             f'<pre><code id="{cid}">{body}</code></pre></div>')
+
+
+def install_blocks():
+    return (codeblock(MARKETPLACE_ADD, "1 · Register the marketplace", slash=True)
+            + codeblock(PLUGIN_INSTALL, "2 · Install the plugin from this marketplace", slash=True))
 
 
 def adm(kind, title, body_html):
@@ -315,7 +328,7 @@ def architecture_svg():
     boxes = [
         (10, "You", "a question in plain language", "or a model file"),
         (240, "Claude Code", "veloxq-solve skill:", "formulate, decode, verify"),
-        (470, "veloxq MCP server", "runs on your machine,", "OAuth to your account"),
+        (470, "veloxq MCP server", "part of the VeloxQ API,", "acts with your OAuth token"),
         (700, "VeloxQ platform", "GPU solvers,", "samples back in seconds"),
     ]
     out = ['<svg viewBox="0 0 920 170" role="img" aria-label="Request flow from the user through Claude Code and the local MCP server to the VeloxQ platform">']
@@ -395,7 +408,7 @@ def build_home():
   <div>
       <h1>QuantumZ for Claude Code</h1>
       <p class="lead">A marketplace of plugins that connect Claude to QuantumZ products. Add it once, install a plugin, and Claude gains the tools and the know-how to use the product from a normal conversation.</p>
-      {codeblock("/plugin marketplace add quantumz-io/qmz-claude\n/plugin install veloxq-solve@quantumz", "In a Claude Code session", slash=True)}
+      {install_blocks()}
       <p class="small">Two commands, no API keys in the conversation, no SDK to learn. The first plugin, <a href="veloxq-solve.html">veloxq-solve</a>, solves optimization problems on the VeloxQ platform.</p>
   </div>
 </div>'''
@@ -409,8 +422,8 @@ def build_home():
 <p>Installation takes a minute and happens entirely inside a Claude Code session.</p>
 <ol class="steps">
   <li><div><h4>Have Claude Code ready</h4><p>Any current Claude Code release works. The examples in this documentation were recorded with Claude Code 2.1.312. Open a session in any directory with <code>claude</code>.</p></div></li>
-  <li><div><h4>Add the marketplace</h4>{codeblock("/plugin marketplace add quantumz-io/qmz-claude", None, slash=True)}<p>Claude Code clones the repository and registers the catalog under the name <code>quantumz</code>. Run <code>/plugin marketplace list</code> to confirm.</p></div></li>
-  <li><div><h4>Install a plugin</h4>{codeblock("/plugin install veloxq-solve@quantumz", None, slash=True)}<p>The <code>name@marketplace</code> form names the catalog explicitly. The plugin installs for your user by default, so it is available in every project. Add <code>--scope project</code> to install it for the current repository only.</p></div></li>
+  <li><div><h4>Add the marketplace</h4>{codeblock(MARKETPLACE_ADD, None, slash=True)}<p>Claude Code clones the repository and registers the catalog under the name <code>quantumz</code>. Run <code>/plugin marketplace list</code> to confirm.</p></div></li>
+  <li><div><h4>Install a plugin</h4>{codeblock(PLUGIN_INSTALL, None, slash=True)}<p>The <code>name@marketplace</code> form names the catalog explicitly. The plugin installs for your user by default, so it is available in every project. Add <code>--scope project</code> to install it for the current repository only.</p></div></li>
   <li><div><h4>Check that it loaded</h4><p><code>/plugin</code> opens the plugin manager and lists what is installed and enabled. A plugin that ships an MCP server, such as veloxq-solve, also shows up under <code>/mcp</code> once its server has started. Skills from the plugin appear in the skill list and fire on matching prompts.</p></div></li>
 </ol>
 {adm("tip", "Trying a plugin without installing it", "<p>To run a checkout of this repository without touching your installation, start Claude Code with <code>claude --plugin-dir /path/to/qmz-claude/plugins/veloxq-solve</code>. The plugin loads for that session only. The same flag also works with a <code>.zip</code> archive of a plugin.</p>")}
@@ -439,7 +452,9 @@ def build_home():
 
     p.section("Updating and removing", f'''
 <p>Marketplaces are updated from their source, and plugins follow the catalog version.</p>
-{codeblock("/plugin marketplace update quantumz     # refresh the catalog from GitHub\n/plugin uninstall veloxq-solve@quantumz  # remove the plugin\n/plugin marketplace remove quantumz      # forget the marketplace", "Maintenance commands", slash=True)}
+{codeblock("/plugin marketplace update quantumz", "Refresh the catalog from GitHub", slash=True)}
+{codeblock("/plugin uninstall veloxq-solve@quantumz", "Remove the plugin", slash=True)}
+{codeblock("/plugin marketplace remove quantumz", "Forget the marketplace", slash=True)}
 <p>Disabling a plugin keeps it installed but stops it from loading: <code>/plugin disable veloxq-solve@quantumz</code>, and <code>enable</code> to turn it back on. The interactive manager behind <code>/plugin</code> offers the same actions with a menu.</p>
 ''')
 
@@ -468,7 +483,7 @@ def build_plugin():
 <p class="eyebrow">Plugin · version 0.2.0</p>
 <h1>veloxq-solve</h1>
 <p class="lead">Solve combinatorial optimization problems on the VeloxQ platform from a Claude Code conversation. Describe the problem, and Claude formulates it as a QUBO or Ising model, runs it on VeloxQ's GPU solvers, verifies the returned samples and explains the result in your terms.</p>
-{codeblock("/plugin marketplace add quantumz-io/qmz-claude\n/plugin install veloxq-solve@quantumz", "Install", slash=True)}
+{install_blocks()}
 '''
     p.section("What VeloxQ is", f'''
 <p><a href="https://web.veloxq.com">VeloxQ</a> is a cloud service from QuantumZ that samples low-energy states of Ising models, which is the same thing as minimizing a quadratic unconstrained binary optimization problem (QUBO). Its solvers are physics-inspired and run on GPUs, handle any coupling graph without the embedding step that hardware annealers need, and scale to sparse instances with hundreds of millions of variables. The platform returns many candidate solutions per job and an energy for each.</p>
@@ -479,27 +494,23 @@ def build_plugin():
 <p>The plugin has two parts that work together.</p>
 <figure class="figure">{architecture_svg()}<figcaption>Claude never talks to the platform directly. The skill decides what to do; the MCP server does it with your account.</figcaption></figure>
 <h3 id="the-mcp-server">The <code>veloxq</code> MCP server</h3>
-<p>A local server, started by Claude Code from the plugin, that wraps the VeloxQ SDK and REST API as typed tools. It runs as you, on your machine, keeps the OAuth tokens for your account under <code>~/.veloxq/</code>, and is the only component that holds credentials. Its tools appear in Claude Code as <code>mcp__plugin_veloxq-solve_veloxq__&lt;tool&gt;</code>.</p>
+<p>A server the VeloxQ API serves at <code>https://api.veloxq.com/mcp</code>, which the plugin registers in Claude Code. It wraps the platform as typed tools and acts with the OAuth token of your account on every call; Claude Code holds that token, nothing is installed on your machine. Its tools appear in Claude Code as <code>mcp__plugin_veloxq-solve_veloxq__&lt;tool&gt;</code>.</p>
 <h3 id="the-skill">The <code>veloxq-solve</code> skill</h3>
 <p>A skill that fires whenever a conversation involves a combinatorial or discrete optimization problem, or mentions QUBO, Ising, annealing or VeloxQ. It carries the workflow, a catalog of standard encodings with penalty-weight guidance, and the specification of the visual report. The skill makes Claude check the connection first, encode the problem, submit once, re-score the returned samples, check every hard constraint, and present the answer in the problem's own units.</p>
 ''')
 
     p.section("Requirements", f'''
 <ul>
-  <li>Python 3.10 or newer with <code>venv</code>. The server's launcher creates <code>~/.veloxq/venv</code> on first start and installs <code>veloxq-sdk</code> and <code>mcp</code> into it.</li>
   <li>Network access to <code>api.veloxq.com</code>, and a browser for the one-time account consent.</li>
   <li>A <a href="https://web.veloxq.com">VeloxQ account</a> with balance or compute quota. Every job is charged to the account.</li>
 </ul>
-{adm("warn", "SDK version", "<p>The server needs per-request access tokens from the SDK (<code>veloxq_sdk.api.core.http.use_access_token</code>). Until a release on PyPI ships them, point <code>VELOXQ_SDK_SOURCE</code> at a checkout of the SDK before the first start, for example <code>export VELOXQ_SDK_SOURCE=/path/to/veloxq_sdk</code>. The launcher refuses an SDK without them and says so in the <code>/mcp</code> error output.</p>")}
-<p>An API key in <code>VELOX_TOKEN</code> or in <code>~/.veloxq/config.py</code> is used instead of OAuth when present, which suits automation and CI.</p>
 ''')
 
     p.section("Installation and first use", f'''
 <ol class="steps">
-  <li><div><h4>Install from the marketplace</h4>{codeblock("/plugin marketplace add quantumz-io/qmz-claude\n/plugin install veloxq-solve@quantumz", None, slash=True)}</div></li>
-  <li><div><h4>Let the server start</h4><p>The first start builds the Python environment, which can take about a minute. <code>/mcp</code> lists the <code>veloxq</code> server; reconnect it from there if it was still building when the session opened.</p></div></li>
-  <li><div><h4>Connect your account</h4><p>Ask for anything, for example <em>“connect my VeloxQ account”</em> or just pose a problem. Claude calls <code>account</code>, sees that the machine is not connected, and calls <code>connect</code>. VeloxQ's consent page opens in your browser, and Claude Code shows the link in a dialog in case it did not. Log in and approve. The server receives the tokens on a loopback redirect and stores them owner-only in <code>~/.veloxq/oauth-tokens.json</code>. No password, token or key passes through the conversation.</p></div></li>
-  <li><div><h4>Ask your question</h4><p>From then on every session on this machine is connected. Tokens refresh themselves, several sessions share one connection safely, and <code>disconnect</code>, or the connected-applications page of your VeloxQ account, ends it.</p></div></li>
+  <li><div><h4>Install from the marketplace</h4>{install_blocks()}</div></li>
+  <li><div><h4>Connect your account</h4><p>Run <code>/mcp</code>, pick the <code>veloxq</code> server and authenticate. VeloxQ's consent page opens in your browser, and Claude Code shows the link in case it did not. Log in and approve. Claude Code keeps the tokens and refreshes them. No password, token or key passes through the conversation.</p></div></li>
+  <li><div><h4>Ask your question</h4><p>From then on every session is connected. The connected-applications page of your VeloxQ account ends the connection.</p></div></li>
 </ol>
 {adm("tip", "A first prompt to try", "<p>Paste this and watch the whole workflow run: <em>“Solve max-cut on this 8-node graph: edges = [(0,1),(0,3),(1,2),(1,4),(2,5),(3,4),(3,6),(4,5),(4,7),(5,7),(6,7),(2,7)]. Which nodes go on each side, and how many edges are cut?”</em> The <a href='veloxq-solve-examples.html#02-max-cut'>recorded run</a> shows what to expect.</p>")}
 {SMALL_PROBLEM_TIP}
@@ -508,9 +519,9 @@ def build_plugin():
     p.section("How a solve works", f'''
 <p>Every solve follows the same five steps, in this order because each one fails faster and cheaper than the next.</p>
 <ol class="steps">
-  <li><div><h4>Check the connection</h4><p><code>account</code> reports whether the machine is connected and shows the balance and quota. Claude warns before submitting when either is zero, since the platform refuses such jobs.</p></div></li>
+  <li><div><h4>Check the connection</h4><p><code>account</code> shows the balance and quota of the connected account. Claude warns before submitting when either is zero, since the platform refuses such jobs.</p></div></li>
   <li><div><h4>Formulate</h4><p>Decisions become binary variables, the objective becomes a quadratic polynomial, and each hard constraint becomes a penalty term that is zero when satisfied. The catalog in <code>references/qubo-formulations.md</code> gives the standard encodings and how to pick penalty weights, so that a weight is neither too small, which lets infeasible answers through, nor so large that the objective turns into rounding noise. Cubic terms, as in SAT, are reduced to quadratic ones with auxiliary variables. Claude keeps a map from problem variables to integer indices.</p></div></li>
-  <li><div><h4>Submit, wait, fetch</h4><p><code>submit_job</code> takes the model as an inline spec or a file and returns a job id at once. <code>get_job</code> follows it until it ends; most jobs finish within seconds. <code>get_result</code> fetches the best samples and recomputes every sample's objective locally with dimod, so the answer never depends on the platform's energy bookkeeping. The skill budgets one submission per problem and resubmits only deliberately, for example after raising a penalty weight.</p></div></li>
+  <li><div><h4>Submit, wait, fetch</h4><p><code>submit_job</code> takes the model as an inline spec and returns a job id at once. <code>get_job</code> follows it until it ends; most jobs finish within seconds. <code>get_result</code> fetches the best samples and recomputes every sample's objective with dimod, so the answer never depends on the platform's energy bookkeeping. The skill budgets one submission per problem and resubmits only deliberately, for example after raising a penalty weight.</p></div></li>
   <li><div><h4>Decode and verify</h4><p>A small script turns the best sample back into the user's domain, checks every hard constraint, recomputes the objective in the user's units, reports how many samples reached the best value, and runs a degeneracy check that catches a dropped linear term or a wrong variable type. Claude does not re-solve the problem by another method; these checks are the verification.</p></div></li>
   <li><div><h4>Present, then offer a report</h4><p>The answer gives the objective, the solution as a table or list, the constraint checks one per line, and the sample count, ending with an offer of a visual report. On yes, or when the prompt asked for a visual output, the same script writes the report view and the <code>report</code> tool renders it.</p></div></li>
 </ol>
@@ -519,14 +530,12 @@ def build_plugin():
     p.section("Tools reference", f'''
 <p>All tools are provided by the <code>veloxq</code> server. Arguments in bold are required. File arguments take absolute paths on the machine running Claude Code.</p>
 {table(["Tool", "Purpose", "Arguments"], [
-    ["<code>account</code>", "Connection state, the account's balance, quota and groups. Called first in every solve.", "none"],
-    ["<code>connect</code>", "Connect this machine to a VeloxQ account with OAuth 2.0. Opens the consent page and shows the link in a dialog; waits for approval.", "<code>wait_seconds</code> (default 90)"],
-    ["<code>disconnect</code>", "Revoke this machine's access and forget its tokens.", "none"],
+    ["<code>account</code>", "The connected account's balance, quota and groups. Called first in every solve.", "none"],
     ["<code>list_solvers</code>", "Solvers with their parameter schemas, costs per second and backends.", "none"],
-    ["<code>submit_job</code>", "Upload a QUBO or Ising model and start a job. Returns the job id at once.", "one of <code>spec</code> (inline, up to 20,000 coefficients) or <code>path</code> (<code>.json</code> spec or <code>.h5</code> model); <code>solver</code> (default VeloxQ), <code>backend</code>, <code>parameters</code>, <code>h5_type</code>"],
-    ["<code>get_job</code>", "Status, timeline, cost and parameters of a job. With <code>wait_seconds</code> it follows the job until it ends.", "<b><code>job_id</code></b>, <code>wait_seconds</code> (default 0, capped at 3600)"],
-    ["<code>get_result</code>", "The best distinct samples of a finished job with objectives recomputed locally and checked against the platform's energies.", "<b><code>job_id</code></b>, the submitted <code>spec</code> or <code>path</code>, <code>top</code> (default 5, at most 100), <code>output</code> (JSON file for the decode script), <code>overwrite</code>, <code>h5_type</code>"],
-    ["<code>report</code>", "Render the visual report of a finished job as one self-contained HTML file.", "<b><code>job_id</code></b>, <code>view</code> or <code>view_path</code>, the submitted <code>spec</code> or <code>path</code>, <code>output</code> (<code>.html</code>), <code>overwrite</code>, <code>h5_type</code>"],
+    ["<code>submit_job</code>", "Upload a QUBO or Ising model and start a job. Returns the job id at once.", "<b><code>spec</code></b> (inline, up to 20,000 coefficients); <code>solver</code> (default VeloxQ), <code>backend</code>, <code>parameters</code>"],
+    ["<code>get_job</code>", "Status, timeline, cost and parameters of a job. With <code>wait_seconds</code> it follows the job until it ends.", "<b><code>job_id</code></b>, <code>wait_seconds</code> (default 0, capped at 60)"],
+    ["<code>get_result</code>", "The best distinct samples of a finished job with objectives recomputed and checked against the platform's energies.", "<b><code>job_id</code></b>, the submitted <code>spec</code>, <code>top</code> (default 5, at most 100)"],
+    ["<code>report</code>", "Render the visual report of a finished job, shown in the conversation as an MCP App.", "<b><code>job_id</code></b>, <code>view</code>, the submitted <code>spec</code>"],
     ["<code>list_jobs</code>", "Recent jobs of the account, newest first.", "<code>status</code>, <code>created</code> (today, yesterday, lastWeek, lastMonth, last3Months, lastYear, all), <code>limit</code> (default 20), <code>q</code>"],
     ["<code>job_logs</code>", "The platform's log lines of a job.", "<b><code>job_id</code></b>, <code>tail</code> (default 200), <code>category</code>, <code>grep</code>, <code>time_period</code>"],
     ["<code>cancel_job</code>", "Ask the platform to cancel a pending or running job. Asynchronous; confirm with <code>get_job</code>.", "<b><code>job_id</code></b>"],
@@ -539,10 +548,9 @@ def build_plugin():
 {codeblock('{"type": "qubo",  "quadratic": [[0, 1, -2.0], [1, 2, 1.5]], "linear": [1.0, 0.0, -1.0]}\n{"type": "ising", "quadratic": [[0, 1, -1.0], [1, 2, -1.0]], "linear": [0.0, 0.0, 0.0]}', "JSON spec")}
 <ul>
   <li><code>quadratic</code> is a list of <code>[i, j, value]</code> triples; <code>matrix</code> may replace it with a dense square matrix. <code>linear</code> is a list or an <code>{{"i": value}}</code> map and may be omitted.</li>
-  <li>An inline spec is limited to 20,000 coefficients, indices below 100,000 and a matrix of at most 500 rows. A spec in a <code>.json</code> file passed as <code>path</code> has no size limit.</li>
-  <li>HDF5 files in the platform's native layout, a group <code>Ising</code> with a dataset <code>biases</code> and either a dense <code>couplings</code> matrix or a group <code>couplings</code> with vectors <code>I</code>, <code>J</code>, <code>V</code>, are uploaded as they are. The <a href="veloxq-solve-examples.html#07-paper-chimera">Chimera example</a> does exactly that with a file from the paper's repository.</li>
-  <li>A foreign HDF5 file is converted when its layout is unambiguous: recognized dataset names first (<code>biases</code>/<code>h</code>/<code>linear</code>, <code>couplings</code>/<code>J</code>/<code>quadratic</code>, <code>Q</code>/<code>qubo</code>), then a single square matrix plus at most one vector, with the variable type taken from a <code>var_type</code> attribute or the diagonal. <code>h5_type</code> overrides the guess. An ambiguous file is refused with a dump of its structure rather than guessed at.</li>
-  <li>Beyond a few million coefficients the skill writes the native HDF5 layout instead of JSON. The platform's own benchmarks reach about 10<sup>8</sup> variables this way.</li>
+  <li>A spec is limited to 20,000 coefficients, indices below 100,000 and a matrix of at most 500 rows.</li>
+  <li>A model file the user supplies (HDF5, CSV, NumPy) is read in a script and submitted as a spec; the skill asks about sign conventions and index bases the file does not make clear rather than guessing.</li>
+  <li>Larger models go through the <a href="https://pypi.org/project/veloxq-sdk/">VeloxQ SDK</a>, whose native HDF5 layout reaches the platform's own scale of about 10<sup>8</sup> variables.</li>
 </ul>
 ''')
 
@@ -578,9 +586,8 @@ def build_plugin():
 
     p.section("Troubleshooting", f'''
 {table(["Symptom", "Cause and fix"], [
-    ["The VeloxQ tools are missing", "The MCP server did not start. Check <code>/mcp</code>; the first start builds <code>~/.veloxq/venv</code> and can take a minute. A permanently failing start usually means no Python 3.10+, no network, or an SDK without <code>use_access_token</code> (set <code>VELOXQ_SDK_SOURCE</code>)."],
-    ["“Not connected” or a 401", "The connection ended. Claude runs <code>connect</code> again and shows the link; approve it in the browser. Never paste a token into the conversation."],
-    ["A 403 naming a missing scope", "The consent was approved with fewer permissions than the action needs. <code>disconnect</code>, then <code>connect</code> again so the consent page lists every scope."],
+    ["The VeloxQ tools are missing, or a 401", "The account is not connected, or the connection ended. Run <code>/mcp</code> and authenticate the <code>veloxq</code> server in the browser. Never paste a token into the conversation."],
+    ["A 403 naming a missing scope", "The consent was approved with fewer permissions than the action needs. Disconnect the app on the connected-applications page of your VeloxQ account and authenticate again, so the consent page lists every scope."],
     ["422 “Insufficient balance” or “account is not verified”", "The platform refuses the job. <code>account</code> shows the balance; top up or verify the account on the VeloxQ site."],
     ["429 with a retry hint", "The account's job queue is full. Wait the stated time."],
     ["A job shows FAILED", "Claude reads <code>job_logs</code> with category ERROR and relays the cause."],
@@ -593,14 +600,7 @@ def build_plugin():
     p.section("Plugin contents", f'''
 {table(["Path", "Purpose"], [
     ["<code>.claude-plugin/plugin.json</code>", "The plugin manifest: name, description, version"],
-    ["<code>.mcp.json</code>", "Declares the <code>veloxq</code> MCP server, started through <code>mcp/run.sh</code>"],
-    ["<code>mcp/run.sh</code>, <code>mcp/setup_env.sh</code>", "Launcher and first-start setup of the server's virtual environment"],
-    ["<code>mcp/veloxq_mcp/server.py</code>", "The tools: connection, account, catalog, jobs, results"],
-    ["<code>mcp/veloxq_mcp/oauth.py</code>", "The OAuth 2.0 flow, token file and refresh"],
-    ["<code>mcp/veloxq_mcp/models.py</code>", "The JSON spec and HDF5 model loaders"],
-    ["<code>mcp/veloxq_mcp/results.py</code>", "Result decoding and the local energy check"],
-    ["<code>mcp/veloxq_mcp/report.py</code>", "The report page"],
-    ["<code>mcp/tests/</code>", "Tests for the server against an in-memory API, and for the report"],
+    ["<code>.mcp.json</code>", "Registers the <code>veloxq</code> MCP server, <code>https://api.veloxq.com/mcp</code>"],
     ["<code>skills/veloxq-solve/SKILL.md</code>", "The skill: workflow, submission formats, verification, troubleshooting"],
     ["<code>skills/veloxq-solve/references/qubo-formulations.md</code>", "Encoding catalog and penalty-weight guidance"],
     ["<code>skills/veloxq-solve/references/report-views.md</code>", "Format of the report's view spec and which figure suits which problem"],

@@ -7,12 +7,19 @@ minimizes QUBOs) with physics-inspired solvers.
 
 ## Installation
 
-From the [quantumz marketplace](../../README.md):
+From the [quantumz marketplace](../../README.md), run each command on its own in a Claude Code session.
 
-```
-/plugin marketplace add quantumz-io/qmz-claude
-/plugin install veloxq-solve@quantumz
-```
+- Register the marketplace:
+
+  ```bash
+  /plugin marketplace add quantumz-io/qmz-claude
+  ```
+
+- Install the plugin from this marketplace:
+
+  ```bash
+  /plugin install veloxq-solve@quantumz
+  ```
 
 ## What it does
 
