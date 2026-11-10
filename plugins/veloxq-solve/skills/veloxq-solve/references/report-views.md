@@ -1,8 +1,7 @@
 # Report view spec
 
-The `report` tool renders a solve as one HTML page. The view spec (`view`,
-or `view_path` naming `view.json` in Claude Code) carries the part only you
-know: the solution decoded into the user's domain.
+The `report` tool renders a solve as one HTML page. The view spec (`view`)
+carries the part only you know: the solution decoded into the user's domain.
 
 Sections: 1. Top-level keys. 2. Figure types. 3. Limits. 4. Full example.
 SKILL.md step 4 says which figure suits which problem.
@@ -217,6 +216,5 @@ view = {
         "edges": [list(e) for e in edges],
     }],
 }
-with open("view.json", "w") as f:
-    json.dump(view, f)
+print(json.dumps(view))
 ```

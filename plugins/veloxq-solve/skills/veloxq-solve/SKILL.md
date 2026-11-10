@@ -13,9 +13,10 @@ description: >-
   hand or brute force — submissions are cheap and fast at any size.
 compatibility: >-
   Requires the VeloxQ MCP tools and a VeloxQ account. In Claude Code the
-  veloxq-solve plugin starts them (Python 3.10+ and network access to the
-  VeloxQ API) and connects to the account with OAuth 2.0 on first use. On
-  claude.ai the VeloxQ connector provides them.
+  veloxq-solve plugin connects to the hosted VeloxQ MCP server (network
+  access) and the user logs in once from /mcp. On claude.ai the VeloxQ
+  connector provides them. Models above 20,000 coefficients need Python
+  with the veloxq-sdk package on the user's machine.
 ---
 
 # Solving optimization problems on VeloxQ
@@ -30,7 +31,7 @@ provides them. This document calls them by the short name.
 | Tool | Purpose |
 |---|---|
 | `account` | Connection state, balance, quota, groups |
-| `connect` / `disconnect` | OAuth 2.0 consent flow for the user's account (Claude Code only) |
+| `session_token` | The connection's access token, for the VeloxQ SDK on the user's machine (Claude Code only) |
 | `list_solvers` | Solvers, their parameters, costs and backends |
 | `submit_job` | Upload a model and start a job |
 | `get_job` | Status, timeline, cost; waits when asked |
@@ -49,17 +50,20 @@ enumeration, dynamic programming, greedy, an ILP — is a local solve even
 when it is framed as "verification" or "computing the known optimum to
 compare against", and is out of scope.
 
-**Claude Code and claude.ai differ in four places.** On claude.ai the
-connector runs on a server, not on the user's machine:
+**The tools run on a server, not on the user's machine.** They read and
+write no files: `submit_job` takes the model inline as `spec`, up to 20,000
+coefficients, or as the `file_id` of a model uploaded with the SDK, and
+`report` takes the view inline as `view`. `get_job` waits at most about a
+minute per call; repeat it while `finished` is false. Claude Code and
+claude.ai differ in two places:
 
-- There is no `connect` or `disconnect`. The user connected the account when
-  adding the connector.
-- The tools read and write no files. `submit_job` takes the model only
-  inline as `spec`, up to 20,000 coefficients, and `report` takes the view
-  only inline as `view`. `path`, `view_path` and `output` are refused.
-- `report` shows the report in the conversation instead of writing a file.
-- `get_job` waits at most about a minute per call. Repeat it while
-  `finished` is false.
+- In Claude Code the user's machine has a shell and a file system. A model
+  above 20,000 coefficients is uploaded from there with the VeloxQ SDK and
+  the token `session_token` returns, and the report is downloaded from the
+  server as an HTML file. On claude.ai neither is possible: models are
+  inline only, and `report` shows the report in the conversation.
+- The user authenticates from `/mcp` in Claude Code and from the
+  connector's settings on claude.ai.
 
 The workflow is always the same steps; do them in order because each one
 fails faster and cheaper than the next.
@@ -74,27 +78,24 @@ fails faster and cheaper than the next.
 
 Call `account` before any formulation work.
 
-- `connected` is true: proceed. The answer also shows the balance and the
-  quota; if either is zero, tell the user before submitting, since the
-  platform refuses jobs without balance.
-- `connected` is false (Claude Code only): call `connect`. It opens the
-  VeloxQ consent page in the user's browser and shows the user the link in
-  a dialog of the client, then waits for the approval. If it answers with
-  `status: pending` and a `message` holding the link (the dialog was
-  dismissed, or the client cannot show one), show the user that message
-  verbatim, with the link as a plain URL they can click, then call
-  `connect` again, which waits for the approval. The request stays valid
-  for ten minutes. Approval happens in the browser; **never ask the user
-  for a password, token or key in the conversation.**
-- The VeloxQ tools are not available at all. In Claude Code the MCP server
-  did not start: tell the user to check `/mcp`. The first start creates the
-  server's Python environment under `~/.veloxq/venv`, which can take a
-  minute; reconnecting from `/mcp` afterwards is enough. On claude.ai the
-  VeloxQ connector is not added or not enabled in this conversation: tell
-  the user to add it under Settings → Connectors and enable it, then stop.
+- It answers: proceed. The answer also shows the balance and the quota; if
+  either is zero, tell the user before submitting, since the platform
+  refuses jobs without balance.
+- It fails with a 401, or the call is refused for want of authentication:
+  the connection to the user's account is missing or ended. In Claude Code
+  tell the user to run `/mcp`, select the `veloxq` server and authenticate;
+  the browser opens the VeloxQ consent page and one approval connects the
+  account. On claude.ai the user reconnects the VeloxQ connector under
+  Settings → Connectors. Approval happens in the browser; **never ask the
+  user for a password, token or key in the conversation.**
+- The VeloxQ tools are not available at all. In Claude Code the server is
+  not connected: tell the user to check `/mcp`, where the `veloxq` server
+  shows its state, and that the machine needs network access to
+  `mcp.veloxq.com`. On claude.ai the VeloxQ connector is not added or not
+  enabled in this conversation: tell the user to add it under
+  Settings → Connectors and enable it, then stop.
 
-Do not call `list_solvers` or submit anything before `account` reports a
-connection; every other tool answers "Not connected" until then.
+Do not call `list_solvers` or submit anything before `account` answers.
 
 ## Step 1: Formulate as QUBO or Ising
 
@@ -127,10 +128,8 @@ to decode.
 ## Step 2: Submit, wait, fetch
 
 Write the model as a spec and submit it. In Claude Code keep it in a file
-`problem.json` as well, and pass that file wherever a tool takes the model.
-The tools take file arguments (`path`, `output`, `view_path`) only as
-absolute paths.
-Indices are integers `0..n-1`:
+`problem.json` as well, so the decode script of step 3 and the report of
+step 4 use the same model. Indices are integers `0..n-1`:
 
 ```json
 {"type": "qubo",  "quadratic": [[0, 1, -2.0], [1, 2, 1.5]], "linear": [1.0, 0.0, -1.0]}
@@ -143,69 +142,85 @@ omitted. An inline spec is limited to 20,000 coefficients, indices below
 100,000 and a matrix of at most 500 rows.
 
 1. `submit_job` with `spec` set to the model (up to 20,000 coefficients) or,
-   in Claude Code, `path` set to the `problem.json` file (no size limit).
-   It returns a
+   for a larger model in Claude Code, `file_id` set to the id of the file
+   uploaded with the SDK (see "Large models" below). It returns a
    `job_id` at once. Leave `solver`, `backend` and `parameters` at their
    defaults unless the user asks otherwise: the defaults prioritize solution
    quality. `list_solvers` shows the parameter names and ranges when the
    user wants control, for example `{"numRep": 512}`.
-2. `get_job` with the `job_id` and `wait_seconds` 300. It returns when the
-   job ends or the time is up; repeat it while `finished` is false. Most
-   jobs end within a minute.
-3. `get_result` with the `job_id`, the same `spec` or `path`, `top` 5, and
-   in Claude Code `output` set to `result.json` for the decode script of
-   step 3. The tool recomputes every returned
-   sample's objective locally with dimod and checks it against the platform's
-   energies, so the answer you relay does not depend on the platform's
-   energy bookkeeping. A mismatch beyond a constant offset is an error, not a
-   result. The answer holds `best_sample` (indexed by variable),
-   `best_objective`, `num_samples`, `num_samples_at_best`, `top` (the best
-   distinct samples), `warnings` and `energy_check`. For an HDF5 file whose
-   variables have labels, `best_sample` follows the integer labels in
-   ascending order. Any labels other than `0..n-1` come back as `labels`:
-   `best_sample[k]` is the variable named `labels[k]`.
+2. `get_job` with the `job_id` and `wait_seconds` 60, the longest wait the
+   server allows. It returns when the job ends or the time is up; repeat it
+   while `finished` is false. Most jobs end within a minute.
+3. `get_result` with the `job_id`, the same `spec`, and `top` 5. The tool
+   recomputes every returned sample's objective locally with dimod and
+   checks it against the platform's energies, so the answer you relay does
+   not depend on the platform's energy bookkeeping. A mismatch beyond a
+   constant offset is an error, not a result. The answer holds
+   `best_sample` (indexed by variable), `best_objective`, `num_samples`,
+   `num_samples_at_best`, `top` (the best distinct samples), `warnings`
+   and `energy_check`. In Claude Code save the answer as `result.json` for
+   the decode script of step 3. A job submitted by `file_id` is read with
+   the SDK instead (see "Large models").
 
 Each submission is a real job on shared hardware charged to the user's
 balance: budget one submission for small problems, and only resubmit
 deliberately (e.g. after raising a penalty weight). Never submit in a loop.
 
-**User-supplied HDF5 files** go through the same tool in Claude Code:
-`submit_job` with `path` set to the file. On claude.ai read the file in the
-code execution environment and submit its biases and couplings as `spec`;
-a model above 20,000 coefficients cannot be submitted from claude.ai, so say
-so and point the user to Claude Code. A file already in the platform's native layout
-(group `Ising` with `biases` + `couplings`) is uploaded exactly as-is; a
-foreign file is converted automatically when its layout is unambiguous.
-Recognized names (`biases`/`h`/`linear`, `couplings`/`J`/`quadratic`,
-`Q`/`qubo`) are matched first; failing that, roles are inferred from shape —
-exactly one square numeric matrix plus at most one same-length vector — with
-Ising-vs-QUBO decided by a `var_type` attribute or, absent that, the diagonal
-(nonzero diagonal ⇒ QUBO). The tool reports what it inferred in
-`model.notes`; when the inference was shape-based, repeat that interpretation
-to the user in your answer, and pass `h5_type` if they meant the other
-convention. If the structure is ambiguous (several square matrices, several
-candidate vectors) the tool refuses with a dump of the file's groups,
-datasets and attributes instead of guessing — read that dump, extract the
-biases/couplings yourself (asking the user about semantics like sign
-conventions or index base if the file doesn't make them clear), and submit
-the JSON spec. Never guess what an unlabeled matrix means: a wrong sign
-convention returns confidently wrong answers. Pass the same `path` and
-`h5_type` to `get_result`.
+**Large models** (above 20,000 coefficients) are uploaded from the user's
+machine with the VeloxQ SDK and the connection's own access token. This
+needs Claude Code; on claude.ai say that the model is too large for the
+connector and point the user to Claude Code. Do not shy away from large
+problems: the platform handles sparse instances up to ~10⁸ variables and
+dense all-to-all couplings without embedding overhead (benchmarks:
+arXiv:2501.19221).
 
-Do not shy away from large problems: the platform handles sparse instances up
-to ~10⁸ variables and dense all-to-all couplings without embedding overhead
-(benchmarks: arXiv:2501.19221). Beyond a few million coefficients write the
-model as an HDF5 file in the native layout instead of JSON: group `Ising`
-with a dataset `biases` of length n and a group `couplings` holding `I`,
-`J`, `V` (1-based indices, each pair stored in both orders), then pass
-`path`. These sizes need Claude Code: claude.ai takes inline models only.
+1. Call `session_token`. It returns `access_token`, valid until
+   `expires_at` (about an hour; call it again for a fresh one), and
+   `api_url`, the API the token belongs to. Pass both to scripts through
+   the environment, the token as `VELOXQ_TOKEN` and the URL as
+   `VELOXQ_API_URL`, which the SDK reads. Never write the token into the
+   answer to the user, into `problem.json` or into any other file.
+2. Build the model as a `dimod.BinaryQuadraticModel` in a script and upload
+   it with `File.from_instance`; the script prints the file id. Run it with
+   the `veloxq-sdk` package installed (`pip install veloxq-sdk`, or
+   `uv run --with veloxq-sdk python upload.py`) and the two variables set:
+
+   ```python
+   import os
+
+   import dimod
+   from veloxq_sdk import File
+   from veloxq_sdk.api.core.http import use_access_token
+
+   bqm = dimod.BinaryQuadraticModel(h, J, 0.0, "SPIN")  # "BINARY" for a QUBO
+   with use_access_token(os.environ["VELOXQ_TOKEN"]):
+       print(File.from_instance(bqm).id)
+   ```
+
+   A user-supplied HDF5 file in the platform's native layout (group `Ising`
+   with `biases` and `couplings`) is uploaded as is with
+   `File.from_path(path)`. Any other file is read in the script (h5py,
+   numpy) into `h` and `J` first. Never guess what an unlabeled matrix
+   means: ask the user about sign conventions and index base when the file
+   does not make them clear, since a wrong convention returns confidently
+   wrong answers.
+3. `submit_job` with `file_id` set to the printed id, then `get_job` as
+   usual.
+4. Read the result with the SDK in the same way, inside `use_access_token`,
+   and decode it in the script of step 3: `Job.from_id(job_id).result` is a
+   dimod `SampleSet`; its `first.sample` is the best state, and
+   `bqm.energies(sampleset)` recomputes the energies to check against the
+   platform's, `sampleset.record.energy`, before trusting them.
+   `get_result` without a `spec` would return the platform's energies
+   unchecked and samples too long for the conversation.
 
 ## Step 3: Decode and verify
 
 Never hand the user raw spins. Decode and check in a script and keep it:
 step 4 extends the same script to build the report's view. On claude.ai run
 it with code execution. Using your index mapping from step 1 and the
-document `get_result` returned (`result.json` in Claude Code):
+document `get_result` returned (saved as `result.json` in Claude Code), or
+the SDK's `SampleSet` for a large model:
 
 1. Decode the best sample(s) into the original domain (which items are in the
    knapsack, the tour order, the color of each node...).
@@ -272,8 +287,8 @@ names. Never type the view by hand. The key names are fixed and unknown keys
 are an error. For a raw QUBO or Ising model with no domain meaning, skip
 the view and call `report` with only the job and the model. A complete
 example for graph coloring, where `color[v]` is the decoded color of node
-`v`. In Claude Code it writes `view.json`; on claude.ai print
-`json.dumps(view)` instead and pass the printed object as `view`:
+`v`. The script prints the view, and the printed object is passed to
+`report` as `view`:
 
 ```python
 import json
@@ -292,8 +307,7 @@ view = {
         "edges": [list(e) for e in edges],
     }],
 }
-with open("view.json", "w") as f:
-    json.dump(view, f)
+print(json.dumps(view))
 ```
 
 - `checks`: one `{"label", "ok", "detail"}` object per hard constraint from
@@ -320,14 +334,16 @@ Each type has its own keys. **Read `references/report-views.md` before
 writing any figure other than the `graph` shown above.**
 
 **4. Render it** with the `report` tool. Do not write plotting code. Pass
-the `job_id`, the view, and the submitted model:
+the `job_id`, `view` set to the printed object, and `spec` set to the
+submitted spec (leave `spec` out for a model submitted by `file_id`):
 
-- In Claude Code: `view_path` set to `view.json`, `path` set to
-  `problem.json` (or the `.h5` file, with the same `h5_type`), and `output`
-  set to `report.html`, each as an absolute path. The tool writes one
-  self-contained file and returns its path as `output`.
-- On claude.ai: `view` set to the printed object and `spec` set to the
-  submitted spec. The report appears in the conversation.
+- On claude.ai the report appears in the conversation.
+- In Claude Code pass `download` true as well. Claude Code shows no MCP
+  Apps, so the tool keeps the page on the server for 15 minutes and
+  returns its `url` under `download`. Fetch it with the token from
+  `session_token`:
+  `curl -fsS -H "Authorization: Bearer $VELOXQ_TOKEN" "$URL" -o report.html`.
+  The file is one self-contained page.
 
 The tool fetches the samples itself and adds the distribution of sample
 objectives; the model adds its coupling graph in the state of the best
@@ -344,9 +360,9 @@ give a link:
   returns. If publishing fails, or the
   file is too large to read before publishing, say so and give the local
   link instead. Never write a URL that a tool did not return.
-- Otherwise link the path the tool returned, and repeat it as plain text for
+- Otherwise link the downloaded file, and repeat it as plain text for
   sessions whose browser cannot follow file links:
-  `[report.html](file://<returned path>)`.
+  `[report.html](file://<absolute path>)`.
 - A request that asked for a visual output up front, without saying where,
   gets the claude.ai page when the Artifact tool is available. Never publish
   when the user asked for a local file or called the data sensitive.
@@ -373,28 +389,29 @@ the link.
   cancellation is asynchronous; confirm it with `get_job`.
 
 To pick up a solve whose session ended before the result came back, call
-`get_result` on the old job id with the same `spec` or `path` that was
-submitted, since the samples are recomputed and decoded against it. Find the
+`get_result` on the old job id with the same `spec` that was submitted,
+since the samples are recomputed and decoded against it (or the SDK, for a
+model submitted by `file_id`). Find the
 id with `list_jobs` if you did not capture it. A job that ended failed or
 canceled has no result, so `get_result` says so and points you to the logs.
 
 ## Troubleshooting
 
-- **"Not connected" or a 401**: the connection ended (the user disconnected
-  the plugin or the connector from their account, or thirty days passed). In
-  Claude Code run step 0 again: `connect`, show the URL if pending, `connect`
-  again. On claude.ai the user reconnects the VeloxQ connector under
+- **A 401, or calls refused for want of authentication**: the connection
+  ended (the user disconnected the application from their account, or the
+  tokens expired). In Claude Code the user authenticates again from
+  `/mcp`; on claude.ai they reconnect the VeloxQ connector under
   Settings → Connectors. **Never ask the user to paste a token or password
   into the conversation.**
 - **A 403 that names a missing scope**: the connection was approved with
-  fewer permissions than the action needs. In Claude Code call `disconnect`,
-  then `connect` again so the consent page lists every scope. On claude.ai
-  the user disconnects and reconnects the connector.
-- **The VeloxQ tools are missing**: in Claude Code the MCP server did not
-  start. The user checks `/mcp`; the first start builds `~/.veloxq/venv` and
-  can take a minute. A permanently failing start usually means no Python
-  3.10+ on the machine or no network. On claude.ai the connector is not
-  added or not enabled for the conversation.
+  fewer permissions than the action needs. The user disconnects and
+  authenticates again (`/mcp` in Claude Code, the connector settings on
+  claude.ai) so the consent page lists every scope.
+- **The VeloxQ tools are missing**: in Claude Code the server is not
+  connected. The user checks `/mcp`, where the `veloxq` server shows its
+  state; a failing connection usually means no network access to
+  `mcp.veloxq.com`. On claude.ai the connector is not added or not enabled
+  for the conversation.
 - **422 "Insufficient balance"** or **"account is not verified"**: the
   platform refuses the job. Relay the message; `account` shows the balance.
 - **429 with a retry hint**: the account's job queue is full. Wait the

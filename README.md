@@ -26,6 +26,6 @@ Run each command on its own in a Claude Code session.
 Solve QUBO/Ising optimization problems on the VeloxQ platform. Provides a
 skill that formulates combinatorial optimization problems, such as max-cut,
 graph coloring, knapsack, TSP, and scheduling, as QUBO or Ising models,
-submits them through the VeloxQ MCP server of the VeloxQ API, and decodes and
-verifies the returned samples. See the
+submits them through the [veloxq-mcp](https://mcp.veloxq.com) server, and
+decodes and verifies the returned samples. See the
 [plugin README](plugins/veloxq-solve/README.md) for requirements and usage.

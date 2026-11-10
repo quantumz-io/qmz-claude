@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "veloxq": {
-      "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/run.sh"]
+      "type": "http",
+      "url": "https://mcp.veloxq.com/mcp"
     }
   }
 }
