@@ -2,7 +2,7 @@
   "$schema": "https://code.claude.com/schemas/marketplace.json",
   "name": "quantumz",
   "description": "QuantumZ for Claude",
-  "owner": { "name": "Hendrik Dumith Louzada" },
+  "owner": { "name": "QuantumZ" },
   "plugins": [
     {
       "name": "veloxq-solve",
