@@ -7,7 +7,100 @@ minimizes QUBOs) with physics-inspired solvers.
 
 ## Installation
 
-From the [quantumz marketplace](../../README.md), run each command on its own in a Claude Code session.
+The plugin installs from the [quantumz marketplace](../../README.md) in
+Claude Desktop or in the Claude Code terminal. Both ways need a VeloxQ
+account and a browser for the one-time consent, and both end with the
+`veloxq` server connected to that account. Every job submitted through the
+plugin is charged to the account's VeloxQ balance.
+
+### Claude Desktop
+
+The same steps are available as a printable
+[setup guide (PDF)](../../docs/static/veloxq-solve-setup-guide.pdf). Setup
+takes about five minutes. Both parts are needed before the plugin can
+submit jobs.
+
+#### Part 1: install the plugin
+
+1. Open a Code session and click the + button at the left of the message box.
+
+   ![The + button at the left of the message box in a Code session](../../docs/static/desktop/step-01.png)
+
+2. In the menu, choose Add plugins. The Directory opens on the Plugins tab.
+
+   ![The + menu with Add plugins highlighted](../../docs/static/desktop/step-02.png)
+
+3. Click the + at the top right of the plugin list to add a marketplace.
+
+   ![The Directory on the Plugins tab with the + button at the top right](../../docs/static/desktop/step-03.png)
+
+4. Choose Add from a repository.
+
+   ![The Add marketplace dialog with Add from a repository highlighted](../../docs/static/desktop/step-04.png)
+
+5. In URL, type `quantumz-io/qmz-claude`, pick it from the list, then click Sync.
+
+   ![The Add marketplace dialog with quantumz-io/qmz-claude in the URL field and the Sync button](../../docs/static/desktop/step-05.png)
+
+6. A Code tab appears with the quantumz marketplace. Click + on VeloxQ Solve.
+
+   ![The Code tab of the Directory with the VeloxQ Solve card and its + button](../../docs/static/desktop/step-06.png)
+
+7. The + turns into a settings gear, and a toast confirms "VeloxQ Solve is installed and ready to use."
+
+   ![The VeloxQ Solve card with a gear icon and the installed toast](../../docs/static/desktop/step-07.png)
+
+#### Part 2: connect the VeloxQ connector
+
+8. Close the Directory. Click + in the message box, then Connectors › Manage connectors.
+
+   ![The + menu with Connectors open and Manage connectors highlighted](../../docs/static/desktop/step-08.png)
+
+9. In Settings › Customize › Connectors, click veloxq ("Provided by the VeloxQ Solve plugin").
+
+   ![The Connectors list in Settings with the veloxq row highlighted](../../docs/static/desktop/step-09.png)
+
+10. The VeloxQ Solve plugin page opens on Connectors. Click veloxq, shown as Not added.
+
+    ![The VeloxQ Solve plugin page with the veloxq connector marked Not added](../../docs/static/desktop/step-10.png)
+
+11. Claude reports "You're not connected to veloxq yet." Click Connect.
+
+    ![The veloxq connector page with the Connect button](../../docs/static/desktop/step-11.png)
+
+12. Claude asks to open api.veloxq.com to authorize veloxq. Click OK. Your browser opens.
+
+    ![The dialog asking to open api.veloxq.com with the OK button](../../docs/static/desktop/step-12.png)
+
+13. Sign in to the VeloxQ Platform with your VeloxQ account (e-mail and password, PLGrid or Google).
+
+    ![The VeloxQ Platform sign-in page in the browser](../../docs/static/desktop/step-13.png)
+
+14. Check that you are signed in to the right account, review what Claude Code may access, and click Allow.
+
+    ![The VeloxQ consent page listing the requested access and the Allow button](../../docs/static/desktop/step-14.png)
+
+15. The browser shows Authentication successful. Close the tab and switch back to Claude.
+
+    ![The Authentication successful page in the browser](../../docs/static/desktop/step-15.png)
+
+16. Claude says "Finish signing in to veloxq in your browser, then click Done." Click Done.
+
+    ![The veloxq connector page with the Done button](../../docs/static/desktop/step-16.png)
+
+17. Done: "veloxq is connected. New sessions will pick this up automatically," and a toast confirms it.
+
+    ![The veloxq connector page showing veloxq is connected and the confirmation toast](../../docs/static/desktop/step-17.png)
+
+Start a new session so the plugin's skill and the `veloxq` server load.
+To disconnect, use Settings › Customize › Connectors › veloxq, or revoke
+Claude Code on the connected applications page of your VeloxQ account. The
+gear on the plugin's card in Directory › Plugins removes the plugin, and
+the … menu next to `quantumz` removes the marketplace.
+
+### Claude Code terminal
+
+Run each command on its own in a Claude Code session.
 
 - Register the marketplace:
 
@@ -20,6 +113,10 @@ From the [quantumz marketplace](../../README.md), run each command on its own in
   ```bash
   /plugin install veloxq-solve@quantumz
   ```
+
+- Connect the `veloxq` server: run `/mcp`, select `veloxq` and authenticate.
+  The VeloxQ consent page opens in the browser. Sign in, click Allow, and
+  return to the terminal.
 
 ## What it does
 
@@ -148,8 +245,9 @@ only and the report is shown in the conversation as an MCP App.
 
 ### Adding the connector and the skill
 
-1. In claude.ai, Settings → Connectors → Add custom connector:
-   `https://mcp.veloxq.com/mcp`, with Advanced settings left empty.
+1. In claude.ai, Settings → Connectors → Add custom connector, with the name
+   `VeloxQ Connector`, the URL `https://mcp.veloxq.com/mcp`, and Advanced
+   settings left empty.
    Connecting opens the VeloxQ consent page.
 2. Build the skill archive and upload it under Settings → Capabilities →
    Skills. With code execution enabled Claude decodes and checks the samples

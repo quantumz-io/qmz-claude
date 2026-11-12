@@ -5,19 +5,21 @@ providing QuantumZ plugins.
 
 ## Installation
 
-Run each command on its own in a Claude Code session.
+The marketplace is added once. Each plugin is then installed from it, with
+the steps on the plugin's own page.
 
-- Register the marketplace:
+In Claude Desktop, open a Code session, click + in the message box and
+choose Add plugins. In the Directory, click + at the top right of the
+plugin list, choose Add from a repository, enter `quantumz-io/qmz-claude`
+and click Sync. The marketplace appears as a Code tab listing its plugins.
+The [plugin README](plugins/veloxq-solve/README.md#claude-desktop) shows
+every step with screenshots.
 
-  ```bash
-  /plugin marketplace add quantumz-io/qmz-claude
-  ```
+In the Claude Code terminal, run in a session:
 
-- Install the plugin from this marketplace:
-
-  ```bash
-  /plugin install veloxq-solve@quantumz
-  ```
+```bash
+/plugin marketplace add quantumz-io/qmz-claude
+```
 
 ## Plugins
 
