@@ -10,6 +10,13 @@
       "source": "./plugins/veloxq-solve",
       "description": "Solve QUBO/Ising optimization problems on the VeloxQ platform",
       "version": "0.3.1"
+    },
+    {
+      "name": "dwave-solve",
+      "displayName": "D-Wave Solve",
+      "source": "./plugins/dwave-solve",
+      "description": "Solve QUBO/Ising optimization problems on D-Wave Leap quantum annealers and hybrid solvers",
+      "version": "0.1.0"
     }
   ]
 }
