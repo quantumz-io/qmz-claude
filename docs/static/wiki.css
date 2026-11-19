@@ -307,7 +307,9 @@ td code { white-space: nowrap; }
 .hero-grid > *, .facts > *, .steps > li > div, .cards > * { min-width: 0; }
 .fact .v, .card h3 { overflow-wrap: anywhere; }
 
-/* Illustrated setup steps */
-.steps.shots > li { margin-bottom: 28px; }
-.steps.shots > li > div > p { margin: 4px 0 10px; }
-.steps.shots img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+/* Setup instructions, one box per app */
+.path { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 4px 20px 8px; margin: 12px 0 24px; }
+.path > h4:first-child { margin-top: 16px; }
+.path-choice { font-weight: 500; }
+.steps.compact > li { margin-bottom: 8px; }
+.steps.compact > li > div > p { margin: 6px 0 0; }

@@ -93,40 +93,45 @@ def codeblock(code, label=None, slash=False):
 
 SETUP_GUIDE_PDF = "static/veloxq-solve-setup-guide.pdf"
 
+# Numbered as in the PDF setup guide, which shows a screenshot for each step.
 DESKTOP_STEPS = [
-    ("Open a Code session and click the + button at the left of the message box.", "The + button at the left of the message box in a Code session"),
-    ("In the menu, choose Add plugins. The Directory opens on the Plugins tab.", "The + menu with Add plugins highlighted"),
-    ("Click the + at the top right of the plugin list to add a marketplace.", "The Directory on the Plugins tab with the + button at the top right"),
-    ("Choose Add from a repository.", "The Add marketplace dialog with Add from a repository highlighted"),
-    ("In URL, type <code>quantumz-io/qmz-claude</code>, pick it from the list, then click Sync.", "The Add marketplace dialog with quantumz-io/qmz-claude in the URL field and the Sync button"),
-    ("A Code tab appears with the quantumz marketplace. Click + on VeloxQ Solve.", "The Code tab of the Directory with the VeloxQ Solve card and its + button"),
-    ("The + turns into a settings gear, and a toast confirms “VeloxQ Solve is installed and ready to use.”", "The VeloxQ Solve card with a gear icon and the installed toast"),
-    ("Close the Directory. Click + in the message box, then Connectors › Manage connectors.", "The + menu with Connectors open and Manage connectors highlighted"),
-    ("In Settings › Customize › Connectors, click veloxq (“Provided by the VeloxQ Solve plugin”).", "The Connectors list in Settings with the veloxq row highlighted"),
-    ("The VeloxQ Solve plugin page opens on Connectors. Click veloxq, shown as Not added.", "The VeloxQ Solve plugin page with the veloxq connector marked Not added"),
-    ("Claude reports “You’re not connected to veloxq yet.” Click Connect.", "The veloxq connector page with the Connect button"),
-    ("Claude asks to open api.veloxq.com to authorize veloxq. Click OK. Your browser opens.", "The dialog asking to open api.veloxq.com with the OK button"),
-    ("Sign in to the VeloxQ Platform with your VeloxQ account (e-mail and password, PLGrid or Google).", "The VeloxQ Platform sign-in page in the browser"),
-    ("Check that you are signed in to the right account, review what Claude Code may access, and click Allow.", "The VeloxQ consent page listing the requested access and the Allow button"),
-    ("The browser shows Authentication successful. Close the tab and switch back to Claude.", "The Authentication successful page in the browser"),
-    ("Claude says “Finish signing in to veloxq in your browser, then click Done.” Click Done.", "The veloxq connector page with the Done button"),
-    ("Done: “veloxq is connected. New sessions will pick this up automatically,” and a toast confirms it.", "The veloxq connector page showing veloxq is connected and the confirmation toast"),
+    "In the Claude desktop app, open a Code session. Click the <b>+</b> button at the left of the message box.",
+    "In the menu, choose <b>Add plugins</b>. The Directory opens on the Plugins tab.",
+    "Click the <b>+</b> at the top right of the plugin list, next to the Anthropic, Partners and Code tabs.",
+    "In the Add marketplace dialog, choose <b>Add from a repository</b>.",
+    "In the URL field, type <code>quantumz-io/qmz-claude</code>, pick it from the list, then click <b>Sync</b>.",
+    "A Code tab appears with the <code>quantumz</code> marketplace. Click the <b>+</b> on the VeloxQ Solve card.",
+    "The <b>+</b> turns into a settings gear, and a message confirms “VeloxQ Solve is installed and ready to use.”",
+    "Close the Directory. Click <b>+</b> in the message box, then <b>Connectors › Manage connectors</b>.",
+    "Settings opens on Customize › Connectors. Click <b>veloxq</b>, listed as “Provided by the VeloxQ Solve plugin”.",
+    "The VeloxQ Solve plugin page opens on its Connectors tab. Click <b>veloxq</b>, shown as Not added.",
+    "Claude reports “You’re not connected to veloxq yet.” Click <b>Connect</b>.",
+    "Claude asks to open api.veloxq.com to authorize veloxq. Click <b>OK</b>. Your browser opens.",
+    "Sign in to the VeloxQ Platform with your VeloxQ account (e-mail and password, PLGrid or Google).",
+    "Check that you are signed in to the right account, review what Claude Code may access, and click <b>Allow</b>.",
+    "The browser shows Authentication successful. Close the tab and switch back to Claude.",
+    "Claude says “Finish signing in to veloxq in your browser, then click Done.” Click <b>Done</b>.",
+    "Claude confirms “veloxq is connected. New sessions will pick this up automatically.”",
 ]
-DESKTOP_PARTS = [("Part 1: install the plugin", 1, 7), ("Part 2: connect the VeloxQ connector", 8, 17)]
+DESKTOP_PARTS = [("Part 1: add the marketplace", 1, 5), ("Part 2: install the plugin", 6, 7),
+                 ("Part 3: connect your VeloxQ account", 8, 17)]
 
 
 def desktop_steps(parts=DESKTOP_PARTS):
-    """The illustrated steps of each (title, first, last) part; a part with no title gets no heading."""
+    """The written steps of each (title, first, last) part. A part with no title gets no heading."""
     out = []
     for title, lo, hi in parts:
         if title:
             out.append(f"<h4>{esc(title)}</h4>")
-        out.append(f'<ol class="steps shots" start="{lo}" style="counter-reset: step {lo - 1}">')
-        for n in range(lo, hi + 1):
-            text, alt = DESKTOP_STEPS[n - 1]
-            out.append(f'<li><div><p>{text}</p><img src="static/desktop/step-{n:02d}.png" alt="{esc(alt)}" loading="lazy" width="1600" height="900"></div></li>')
+        out.append(f'<ol class="steps compact" start="{lo}" style="counter-reset: step {lo - 1}">')
+        out.extend(f"<li><div><p>{DESKTOP_STEPS[n - 1]}</p></div></li>" for n in range(lo, hi + 1))
         out.append("</ol>")
     return "\n".join(out)
+
+
+def path_choice(desktop_href, terminal_href):
+    return (f'<p class="path-choice">Follow the steps for the app you use: '
+            f'<a href="{desktop_href}">Claude Desktop</a> or <a href="{terminal_href}">Claude Code in the terminal</a>.</p>')
 
 
 def adm(kind, title, body_html):
@@ -456,30 +461,32 @@ def build_home():
   <div>
       <h1>QuantumZ for Claude Code</h1>
       <p class="lead">A marketplace of plugins that connect Claude to QuantumZ products. Add it once, install a plugin, and Claude gains the tools and the know-how to use the product from a normal conversation.</p>
-      <p class="small">No API keys in the conversation, no SDK to learn. The first plugin, <a href="veloxq-solve.html">veloxq-solve</a>, solves optimization problems on the VeloxQ platform.</p>
+      <p class="small">No API keys in the conversation, no SDK to learn. The first plugin, <a href="veloxq-solve.html">veloxq-solve</a>, solves optimization problems on the VeloxQ platform. Its <a href="veloxq-solve.html#installation">installation steps</a> include adding this marketplace.</p>
   </div>
 </div>'''
+
+    p.section("Adding the marketplace", f'''
+<p>The marketplace is added once. Each plugin is then installed from it, and the plugin's own page has those steps.</p>
+{path_choice("#add-desktop", "#add-terminal")}
+''')
+    desktop = f'''
+{desktop_steps([("", 1, 5)])}
+<p>The Code tab now lists the plugins of the <code>quantumz</code> marketplace, each with a <b>+</b> button that installs it. Continue with the plugin's page, for example <a href="veloxq-solve.html#install-desktop">veloxq-solve</a>.</p>
+'''
+    p.section("Claude Desktop", f'<div class="path">{desktop}</div>', level=3, id="add-desktop")
+    terminal = f'''
+<p>Any current Claude Code release works. The examples in this documentation were recorded with Claude Code 2.1.312. Open a session in any directory with <code>claude</code> and run</p>
+{codeblock(MARKETPLACE_ADD, "Register the marketplace", slash=True)}
+<p>Claude Code clones the repository and registers the catalog under the name <code>quantumz</code>. Run <code>/plugin marketplace list</code> to confirm. Plugins are then installed by name with <code>/plugin install &lt;plugin&gt;@quantumz</code>. The plugin's page gives the exact command, for example <a href="veloxq-solve.html#install-terminal">veloxq-solve</a>.</p>
+{adm("tip", "Trying a plugin without installing it", "<p>To run a checkout of this repository without touching your installation, start Claude Code with <code>claude --plugin-dir /path/to/qmz-claude/plugins/veloxq-solve</code>. The plugin loads for that session only. The same flag also works with a <code>.zip</code> archive of a plugin.</p>")}
+<p>The same operations exist as shell commands for scripts and CI: <code>claude plugin marketplace add</code>, <code>claude plugin install</code>, <code>claude plugin enable</code> and <code>claude plugin disable</code>. Run <code>claude plugin --help</code> for the full list.</p>
+'''
+    p.section("Claude Code in the terminal", f'<div class="path">{terminal}</div>', level=3, id="add-terminal")
 
     p.section("What a plugin marketplace is", f'''
 <p>Claude Code <a href="https://code.claude.com/docs/en/plugins">plugins</a> bundle skills, MCP servers, commands and hooks so that they install as one unit. A <a href="https://code.claude.com/docs/en/plugin-marketplaces">marketplace</a> is a Git repository with a catalog file, <code>.claude-plugin/marketplace.json</code>, that lists plugins and where they live. Once a marketplace is added, its plugins can be installed by name, updated from the source, and removed again, all from inside a session.</p>
 <p>This marketplace is named <code>quantumz</code>. Its catalog points at the plugins in the <code>plugins/</code> directory of the same repository, so installing a plugin fetches the repository and copies the plugin into Claude Code's plugin cache.</p>
 ''')
-
-    p.section("Adding the marketplace", f'''
-<p>The marketplace is added once, from inside Claude: in the Claude desktop app through the Directory, or in the Claude Code terminal with one slash command. Each plugin is then installed from it; the plugin's own page has those steps.</p>
-''')
-    p.section("Claude Desktop", f'''
-<p>Open a Code session in the desktop app. The marketplace is added from the Directory and shows up there as a Code tab.</p>
-{desktop_steps([("", 1, 5)])}
-<p>The Code tab now lists the plugins of the <code>quantumz</code> marketplace, each with a + button that installs it. Continue with the plugin's page, for example <a href="veloxq-solve.html#installation">veloxq-solve</a>.</p>
-''', level=3)
-    p.section("Claude Code terminal", f'''
-<p>Any current Claude Code release works. The examples in this documentation were recorded with Claude Code 2.1.312. Open a session in any directory with <code>claude</code> and run:</p>
-{codeblock(MARKETPLACE_ADD, "Register the marketplace", slash=True)}
-<p>Claude Code clones the repository and registers the catalog under the name <code>quantumz</code>. Run <code>/plugin marketplace list</code> to confirm. Plugins are then installed by name with <code>/plugin install &lt;plugin&gt;@quantumz</code>; the plugin's page gives the exact command.</p>
-{adm("tip", "Trying a plugin without installing it", "<p>To run a checkout of this repository without touching your installation, start Claude Code with <code>claude --plugin-dir /path/to/qmz-claude/plugins/veloxq-solve</code>. The plugin loads for that session only. The same flag also works with a <code>.zip</code> archive of a plugin.</p>")}
-<p>The same operations exist as terminal commands for scripts and CI: <code>claude plugin marketplace add</code>, <code>claude plugin install</code>, <code>claude plugin enable</code> and <code>claude plugin disable</code>. Run <code>claude plugin --help</code> for the full list.</p>
-''', level=3)
 
     p.section("Plugins in this marketplace", nav_children=[("veloxq-solve", "veloxq-solve.html")], body=f'''
 <div class="cards">
@@ -503,11 +510,17 @@ def build_home():
 
     p.section("Updating and removing", f'''
 <p>Marketplaces are updated from their source, and plugins follow the catalog version.</p>
+<div class="path">
+<h4>Claude Desktop</h4>
+<p>Open the Directory with <b>+ › Add plugins</b> in the message box and go to the Code tab. The gear on the plugin’s card removes the plugin, and the <b>…</b> menu next to <code>quantumz</code> removes the marketplace.</p>
+</div>
+<div class="path">
+<h4>Claude Code in the terminal</h4>
 {codeblock("/plugin marketplace update quantumz", "Refresh the catalog from GitHub", slash=True)}
 {codeblock("/plugin uninstall veloxq-solve@quantumz", "Remove the plugin", slash=True)}
 {codeblock("/plugin marketplace remove quantumz", "Forget the marketplace", slash=True)}
-<p>Disabling a plugin keeps it installed but stops it from loading: <code>/plugin disable veloxq-solve@quantumz</code>, and <code>enable</code> to turn it back on. The interactive manager behind <code>/plugin</code> offers the same actions with a menu.</p>
-<p>In the Claude desktop app, the gear on the plugin’s card in Directory › Plugins removes the plugin, and the … menu next to <code>quantumz</code> removes the marketplace.</p>
+<p><code>/plugin disable veloxq-solve@quantumz</code> keeps the plugin installed but stops it from loading, and <code>enable</code> turns it back on. The interactive manager behind <code>/plugin</code> offers the same actions with a menu.</p>
+</div>
 ''')
 
     p.section("Repository layout", f'''
@@ -537,6 +550,38 @@ def build_plugin():
 <p class="lead">Solve combinatorial optimization problems on the VeloxQ platform from a Claude conversation. Describe the problem, and Claude formulates it as a QUBO or Ising model, runs it on VeloxQ's GPU solvers, verifies the returned samples and explains the result in your terms.</p>
 <p class="small">Source and README: <a href="{PLUGIN_README}">plugins/veloxq-solve</a> on GitHub.</p>
 '''
+    p.section("Installation", f'''
+<p>You need a <a href="https://web.veloxq.com">VeloxQ account</a> with balance or compute quota, since every job is charged to it, and network access to <code>mcp.veloxq.com</code> with a browser for a one-time sign-in. Installation adds the <code>quantumz</code> marketplace, installs the plugin from it, and connects the <code>veloxq</code> server to your VeloxQ account. The plugin cannot submit jobs until all three are done.</p>
+{path_choice("#install-desktop", "#install-terminal")}
+''')
+    desktop = f'''
+<p>Setup takes about five minutes. Skip part 1 if the <code>quantumz</code> marketplace already shows on the Code tab of the Directory. The PDF guide has the same numbered steps with a screenshot for each.</p>
+<a class="filelink" href="{SETUP_GUIDE_PDF}" download>Download the setup guide as a PDF ↓</a>
+{desktop_steps()}
+<p>Start a new session so the plugin's skill and the <code>veloxq</code> server load.</p>
+<h4>Disconnecting and removing</h4>
+<p>To disconnect, open Settings › Customize › Connectors › veloxq. To remove the plugin, click the gear on its card on the Code tab of the Directory.</p>
+'''
+    p.section("Claude Desktop", f'<div class="path">{desktop}</div>', level=3, id="install-desktop")
+    terminal = f'''
+<p>Run each command on its own in a Claude Code session, started with <code>claude</code> in any directory.</p>
+<ol class="steps">
+  <li><div><h4>Add the marketplace</h4>{codeblock(MARKETPLACE_ADD, None, slash=True)}<p>Skip this step if <code>/plugin marketplace list</code> already shows <code>quantumz</code>.</p></div></li>
+  <li><div><h4>Install the plugin</h4>{codeblock(PLUGIN_INSTALL, None, slash=True)}<p>The plugin installs for your user by default, so it is available in every project. Add <code>--scope project</code> to install it for the current repository only.</p></div></li>
+  <li><div><h4>Connect your account</h4><p>Run <code>/mcp</code>, pick the <code>veloxq</code> server and authenticate. VeloxQ's consent page opens in your browser, and Claude Code shows the link in case it did not. Sign in and click <b>Allow</b>. Claude Code keeps the tokens and refreshes them. No password, token or key passes through the conversation.</p></div></li>
+  <li><div><h4>Check that it loaded</h4><p><code>/plugin</code> lists the plugin as installed and enabled, and <code>/mcp</code> shows the <code>veloxq</code> server as connected. From then on every session is connected.</p></div></li>
+</ol>
+<h4>Disconnecting and removing</h4>
+<p>To disconnect, pick the <code>veloxq</code> server in <code>/mcp</code>. To remove the plugin, run <code>/plugin uninstall veloxq-solve@quantumz</code>.</p>
+'''
+    p.section("Claude Code in the terminal", f'<div class="path">{terminal}</div>', level=3, id="install-terminal")
+    p.section("First use", f'''
+{adm("tip", "A first prompt to try", "<p>Paste this and watch the whole workflow run: <em>“Solve max-cut on this 8-node graph: edges = [(0,1),(0,3),(1,2),(1,4),(2,5),(3,4),(3,6),(4,5),(4,7),(5,7),(6,7),(2,7)]. Which nodes go on each side, and how many edges are cut?”</em> The <a href='veloxq-solve-examples.html#02-max-cut'>recorded run</a> shows what to expect.</p>")}
+{SMALL_PROBLEM_TIP}
+<p>Models above 20,000 coefficients are uploaded with the <a href="https://pypi.org/project/veloxq-sdk/">veloxq-sdk</a> Python package, so Claude needs Python with that package for those. Smaller models need nothing on your machine.</p>
+<p>Access can also be revoked from the VeloxQ side, on the connected applications page of your VeloxQ account.</p>
+''', level=3)
+
     p.section("What VeloxQ is", f'''
 <p><a href="https://web.veloxq.com">VeloxQ</a> is a cloud service from QuantumZ that samples low-energy states of Ising models, which is the same thing as minimizing a quadratic unconstrained binary optimization problem (QUBO). Its solvers are physics-inspired and run on GPUs, handle any coupling graph without the embedding step that hardware annealers need, and scale to sparse instances with hundreds of millions of variables. The platform returns many candidate solutions per job and an energy for each.</p>
 <p>Almost any discrete optimization problem can be written in this form: max-cut, graph partitioning and coloring, number partitioning, knapsack, routing, scheduling, independent sets, portfolio selection and spin glasses among them. The encoding is where the work is, and that is what this plugin automates.</p>
@@ -550,37 +595,6 @@ def build_plugin():
 <h3 id="the-skill">The <code>veloxq-solve</code> skill</h3>
 <p>A skill that fires whenever a conversation involves a combinatorial or discrete optimization problem, or mentions QUBO, Ising, annealing or VeloxQ. It carries the workflow, a catalog of standard encodings with penalty-weight guidance, and the specification of the visual report. The skill makes Claude check the connection first, encode the problem, submit once, re-score the returned samples, check every hard constraint, and present the answer in the problem's own units.</p>
 ''')
-
-    p.section("Requirements", f'''
-<ul>
-  <li>Network access to <code>mcp.veloxq.com</code>, and a browser for the one-time account consent.</li>
-  <li>A <a href="https://web.veloxq.com">VeloxQ account</a> with balance or compute quota. Every job is charged to the account.</li>
-  <li>Python with the <a href="https://pypi.org/project/veloxq-sdk/">veloxq-sdk</a> package, only for models above 20,000 coefficients.</li>
-</ul>
-''')
-
-    p.section("Installation", f'''
-<p>The plugin is installed from the <code>quantumz</code> marketplace, in the Claude desktop app or in the Claude Code terminal. Both ways end with the <code>veloxq</code> server connected to your VeloxQ account after a one-time consent in the browser. Both parts are needed before the plugin can submit jobs.</p>
-''')
-    p.section("Claude Desktop", f'''
-<p>Setup takes about five minutes. Steps 1 to 5 add the marketplace and are the same for every plugin; the rest install and connect this one.</p>
-<a class="filelink" href="{SETUP_GUIDE_PDF}" download>Download the setup guide as a PDF ↓</a>
-{desktop_steps()}
-<p>Start a new session so the plugin's skill and the <code>veloxq</code> server load.</p>
-''', level=3)
-    p.section("Claude Code terminal", f'''
-<p>With the marketplace <a href="index.html#adding-the-marketplace">added</a>, run each command on its own in a Claude Code session.</p>
-<ol class="steps">
-  <li><div><h4>Install the plugin</h4>{codeblock(PLUGIN_INSTALL, None, slash=True)}<p>The <code>name@marketplace</code> form names the catalog explicitly. The plugin installs for your user by default, so it is available in every project. Add <code>--scope project</code> to install it for the current repository only.</p></div></li>
-  <li><div><h4>Connect your account</h4><p>Run <code>/mcp</code>, pick the <code>veloxq</code> server and authenticate. VeloxQ's consent page opens in your browser, and Claude Code shows the link in case it did not. Sign in and click Allow. Claude Code keeps the tokens and refreshes them. No password, token or key passes through the conversation.</p></div></li>
-  <li><div><h4>Check that it loaded</h4><p><code>/plugin</code> lists the plugin as installed and enabled, and <code>/mcp</code> shows the <code>veloxq</code> server as connected. From then on every session is connected.</p></div></li>
-</ol>
-''', level=3)
-    p.section("First use", f'''
-{adm("tip", "A first prompt to try", "<p>Paste this and watch the whole workflow run: <em>“Solve max-cut on this 8-node graph: edges = [(0,1),(0,3),(1,2),(1,4),(2,5),(3,4),(3,6),(4,5),(4,7),(5,7),(6,7),(2,7)]. Which nodes go on each side, and how many edges are cut?”</em> The <a href='veloxq-solve-examples.html#02-max-cut'>recorded run</a> shows what to expect.</p>")}
-{SMALL_PROBLEM_TIP}
-<p>To disconnect, use <code>/mcp</code> in the terminal or Settings › Customize › Connectors › veloxq in the desktop app, or revoke Claude Code on the connected applications page of your VeloxQ account. In the desktop app the gear on the plugin's card in Directory › Plugins removes the plugin; in the terminal, <code>/plugin uninstall veloxq-solve@quantumz</code>.</p>
-''', level=3)
 
     p.section("How a solve works", f'''
 <p>Every solve follows the same five steps, in this order because each one fails faster and cheaper than the next.</p>
@@ -801,7 +815,8 @@ def write_site(out, pages, index_json, skeleton_index=True):
     for pg in pages:
         skeleton = skeleton_index or pg.file != "index.html"
         (out / pg.file).write_text(render(pages, pg, index_json, skeleton=skeleton))
-    shutil.copytree(STATIC_DIR, out / "static", dirs_exist_ok=True)
+    # static/desktop/ holds the setup screenshots of the plugin README, not used by the site.
+    shutil.copytree(STATIC_DIR, out / "static", dirs_exist_ok=True, ignore=shutil.ignore_patterns("desktop"))
     (out / "examples").mkdir(exist_ok=True)
     for f in EXAMPLES_DIR.glob("*.html"):
         shutil.copy(f, out / "examples" / f.name)
