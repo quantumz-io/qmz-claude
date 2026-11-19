@@ -78,9 +78,10 @@ fails faster and cheaper than the next.
 
 Call `account` before any formulation work.
 
-- It answers: proceed. The answer also shows the balance and the quota; if
-  either is zero, tell the user before submitting, since the platform
-  refuses jobs without balance.
+- It answers: proceed. The answer also shows the balance and the quota. The
+  platform accepts a job when either is positive, drawing on quota first and
+  then on balance. Only when both are zero, tell the user before submitting,
+  since the platform refuses the job.
 - It fails with a 401, or the call is refused for want of authentication:
   the connection to the user's account is missing or ended. In Claude Code
   tell the user to run `/mcp`, select the `veloxq` server and authenticate;
@@ -163,8 +164,9 @@ omitted. An inline spec is limited to 20,000 coefficients, indices below
    the SDK instead (see "Large models").
 
 Each submission is a real job on shared hardware charged to the user's
-balance: budget one submission for small problems, and only resubmit
-deliberately (e.g. after raising a penalty weight). Never submit in a loop.
+quota and then balance. Budget one submission for small problems, and only
+resubmit deliberately (e.g. after raising a penalty weight). Never submit in
+a loop.
 
 **Large models** (above 20,000 coefficients) are uploaded from the user's
 machine with the VeloxQ SDK and the connection's own access token. This

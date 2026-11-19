@@ -11,7 +11,7 @@ The plugin installs from the [quantumz marketplace](../../README.md) in
 Claude Desktop or in the Claude Code terminal. Both ways need a VeloxQ
 account and a browser for the one-time consent, and both end with the
 `veloxq` server connected to that account. Every job submitted through the
-plugin is charged to the account's VeloxQ balance.
+plugin is charged to the account's VeloxQ quota, then to its balance.
 
 ### Claude Desktop
 
