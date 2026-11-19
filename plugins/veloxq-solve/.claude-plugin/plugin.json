@@ -2,6 +2,6 @@
   "name": "veloxq-solve",
   "displayName": "VeloxQ Solve",
   "description": "Solve QUBO/Ising optimization problems on the VeloxQ platform",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": { "name": "QuantumZ" }
 }
