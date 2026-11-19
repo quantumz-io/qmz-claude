@@ -31,3 +31,13 @@ graph coloring, knapsack, TSP, and scheduling, as QUBO or Ising models,
 submits them through the [veloxq-mcp](https://mcp.veloxq.com) server, and
 decodes and verifies the returned samples. See the
 [plugin README](plugins/veloxq-solve/README.md) for requirements and usage.
+
+### [dwave-solve](plugins/dwave-solve/README.md)
+
+Solve the same class of QUBO/Ising optimization problems on
+[D-Wave Leap](https://cloud.dwavesys.com/leap/), on an Advantage quantum
+annealer or a Leap hybrid solver. There is no D-Wave MCP server: the skill
+runs the Ocean SDK on the user's machine, asks once for the Leap API token,
+and stores it in Ocean's configuration file only if the user agrees. See
+the [plugin README](plugins/dwave-solve/README.md) for requirements and
+usage.
